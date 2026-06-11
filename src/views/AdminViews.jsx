@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { Modal, Icon, ProductCard, ImageUpload, StageBadge, Toast, MoqBar } from '../components/UI';
-import { BRANDS, BRAND_COLORS, MARKETS, ORDER_STAGES } from '../lib/constants';
+import { BRANDS, BRAND_COLORS, MARKETS, ORDER_STAGES, CATEGORIES } from '../lib/constants';
 
 function uid() { return crypto.randomUUID(); }
 
@@ -453,7 +453,7 @@ function ProductEditModal({ product, onClose, onSave, toast }) {
     >
       <div className="form-grid">
         <div className="form-group full"><label>Name</label><input value={form.name} onChange={e => set('name', e.target.value)} /></div>
-        <div className="form-group"><label>Category</label><input value={form.category} onChange={e => set('category', e.target.value)} /></div>
+        <div className="form-group"><label>Category</label><select value={form.category} onChange={e => set('category', e.target.value)}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
         <div className="form-group"><label>Status</label><select value={form.status} onChange={e => set('status', e.target.value)}><option value="active">Active</option><option value="draft">Draft</option></select></div>
         <div className="form-group"><label>MOQ</label><input type="number" value={form.moq} onChange={e => set('moq', parseInt(e.target.value))} /></div>
         <div className="form-group"><label>Unit Price (USD)</label><input type="number" step="0.01" value={form.unit_price} onChange={e => set('unit_price', parseFloat(e.target.value))} /></div>

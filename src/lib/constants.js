@@ -1,5 +1,6 @@
 export const BRANDS = ['Bruhm', 'Electromart', 'Tamashi'];
 export const MARKETS = ['Nigeria', 'Ghana', 'International'];
+export const CATEGORIES = ['Apparel', 'Drinkware', 'Bags & Totes', 'Stationery', 'Office & Desk', 'Tech Accessories', 'Outdoor & Lifestyle'];
 export const BRAND_COLORS = { Bruhm: '#C0392B', Electromart: '#1D4ED8', Tamashi: '#047857' };
 
 export const ORDER_STAGES = [

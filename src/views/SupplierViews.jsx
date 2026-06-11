@@ -2,35 +2,48 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { Modal, Icon, StageBadge, ImageUpload, Toast } from '../components/UI';
-import { BRANDS, BRAND_COLORS, MARKETS, ORDER_STAGES } from '../lib/constants';
+import { BRANDS, BRAND_COLORS, MARKETS, ORDER_STAGES, CATEGORIES } from '../lib/constants';
 import { OrderDetailModal } from './AdminViews';
 
 // ── SUBMIT NEW ITEM ────────────────────────────────────────────────────────
 export function SupplierSubmitItem({ onRefresh, toast }) {
   const { profile } = useAuth();
   const [form, setForm] = useState({
-    name: '', category: '', moq: '', unit_price: '', status: 'pending_approval',
+    name: '', category: CATEGORIES[0], moq: '', unit_price: '', status: 'pending_approval',
     production_lead_days: 30, shipping_lead_days: 45,
   });
   const [variants, setVariants] = useState([]);
-  const [vForm, setVForm] = useState({ brand: BRANDS[0], sku: '', moq_override: '' });
+  const [vForm, setVForm] = useState({ brand: BRANDS[0], sku: '', imageFile: null, imagePreview: null });
   const [imageFile, setImageFile] = useState(null);
-  const [variantImages, setVariantImages] = useState({});
   const [saving, setSaving] = useState(false);
-  const [step, setStep] = useState(1); // 1=details, 2=variants
+  const [step, setStep] = useState(1);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const addVariant = () => {
     if (!vForm.sku.trim()) return;
-    setVariants(v => [...v, { tempId: Math.random().toString(36).slice(2), brand: vForm.brand, sku: vForm.sku, color: BRAND_COLORS[vForm.brand], moq_override: vForm.moq_override ? parseInt(vForm.moq_override) : null }]);
-    setVForm({ brand: BRANDS[0], sku: '', moq_override: '' });
+    setVariants(v => [...v, {
+      tempId: Math.random().toString(36).slice(2),
+      brand: vForm.brand,
+      sku: vForm.sku,
+      color: BRAND_COLORS[vForm.brand],
+      imageFile: vForm.imageFile,
+      imagePreview: vForm.imagePreview,
+    }]);
+    setVForm({ brand: BRANDS[0], sku: '', imageFile: null, imagePreview: null });
   };
 
   const removeVariant = (tempId) => setVariants(v => v.filter(x => x.tempId !== tempId));
 
+  const handleVImageChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const preview = URL.createObjectURL(file);
+    setVForm(f => ({ ...f, imageFile: file, imagePreview: preview }));
+  };
+
   const uploadImage = async (file, path) => {
-    const { data, error } = await supabase.storage.from('product-images').upload(path, file, { upsert: true });
+    const { error } = await supabase.storage.from('product-images').upload(path, file, { upsert: true });
     if (error) return null;
     const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(path);
     return publicUrl;
@@ -40,13 +53,9 @@ export function SupplierSubmitItem({ onRefresh, toast }) {
     if (!form.name || !form.moq || !form.unit_price) return;
     setSaving(true);
     try {
-      // Upload main image
       let imageUrl = null;
-      if (imageFile) {
-        imageUrl = await uploadImage(imageFile, `products/${Date.now()}_${imageFile.name}`);
-      }
+      if (imageFile) imageUrl = await uploadImage(imageFile, `products/${Date.now()}_${imageFile.name}`);
 
-      // Insert product
       const { data: product, error } = await supabase.from('products').insert({
         ...form,
         moq: parseInt(form.moq),
@@ -59,25 +68,20 @@ export function SupplierSubmitItem({ onRefresh, toast }) {
 
       if (error) throw error;
 
-      // Insert variants
       for (const v of variants) {
         let vImageUrl = null;
-        if (variantImages[v.tempId]) {
-          vImageUrl = await uploadImage(variantImages[v.tempId], `variants/${Date.now()}_${variantImages[v.tempId].name}`);
-        }
+        if (v.imageFile) vImageUrl = await uploadImage(v.imageFile, `variants/${Date.now()}_${v.imageFile.name}`);
         await supabase.from('product_variants').insert({
           product_id: product.id,
           brand: v.brand, sku: v.sku, color: v.color,
-          moq_override: v.moq_override || null,
           image_url: vImageUrl,
         });
       }
 
       toast('Item submitted for approval', 'success');
-      setForm({ name: '', category: '', moq: '', unit_price: '', status: 'pending_approval', production_lead_days: 30, shipping_lead_days: 45 });
+      setForm({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', status: 'pending_approval', production_lead_days: 30, shipping_lead_days: 45 });
       setVariants([]);
       setImageFile(null);
-      setVariantImages({});
       setStep(1);
       onRefresh();
     } catch (e) {
@@ -100,8 +104,12 @@ export function SupplierSubmitItem({ onRefresh, toast }) {
         <div className="card" style={{ padding: 24, maxWidth: 640 }}>
           <div className="form-grid">
             <div className="form-group full"><label>Product Name</label><input value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Ceramic Mug" /></div>
-            <div className="form-group"><label>Category</label><input value={form.category} onChange={e => set('category', e.target.value)} placeholder="e.g. Drinkware" /></div>
-            <div className="form-group"><label>Default MOQ</label><input type="number" value={form.moq} onChange={e => set('moq', e.target.value)} placeholder="500" /></div>
+            <div className="form-group"><label>Category</label>
+              <select value={form.category} onChange={e => set('category', e.target.value)}>
+                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="form-group"><label>MOQ</label><input type="number" value={form.moq} onChange={e => set('moq', e.target.value)} placeholder="500" /></div>
             <div className="form-group"><label>Unit Price (USD)</label><input type="number" step="0.01" value={form.unit_price} onChange={e => set('unit_price', e.target.value)} placeholder="2.80" /></div>
             <div className="form-group"><label>Production Lead (days)</label><input type="number" value={form.production_lead_days} onChange={e => set('production_lead_days', e.target.value)} /></div>
             <div className="form-group"><label>Shipping Lead (days)</label><input type="number" value={form.shipping_lead_days} onChange={e => set('shipping_lead_days', e.target.value)} /></div>
@@ -116,26 +124,54 @@ export function SupplierSubmitItem({ onRefresh, toast }) {
       {step === 2 && (
         <div className="card" style={{ padding: 24, maxWidth: 760 }}>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 16 }}>
-            Add one variant per brand. Each can have its own image and optional MOQ override.
+            Add one variant per brand. Each variant has its own branded image. MOQ is shared across all variants.
           </div>
+
+          {/* Added variants list */}
           {variants.map(v => (
-            <div className="variant-row" key={v.tempId}>
-              <div style={{ width: 18, height: 18, borderRadius: '50%', background: v.color, border: '2px solid white', boxShadow: '0 0 0 1px var(--border)', flexShrink: 0 }} />
-              <span style={{ flex: 1, fontSize: 12 }}><strong>{v.brand}</strong> — {v.sku}{v.moq_override ? ` (MOQ: ${v.moq_override})` : ''}</span>
-              {variantImages[v.tempId] && <span style={{ fontSize: 10, color: 'var(--green)' }}>✓ Image</span>}
-              <label style={{ fontSize: 10, color: 'var(--blue)', cursor: 'pointer', textTransform: 'none', letterSpacing: 0 }}>
-                {Icon.upload}
-                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setVariantImages(prev => ({ ...prev, [v.tempId]: e.target.files[0] }))} />
-              </label>
+            <div className="variant-row" key={v.tempId} style={{ alignItems: 'center' }}>
+              {v.imagePreview
+                ? <img src={v.imagePreview} alt={v.brand} style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 'var(--radius-md)', flexShrink: 0 }} />
+                : <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-md)', background: v.color, opacity: 0.15, flexShrink: 0 }} />
+              }
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color, display: 'inline-block', flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: 12 }}><strong>{v.brand}</strong> — {v.sku}</span>
+              {v.imageFile
+                ? <span style={{ fontSize: 10, color: 'var(--green)' }}>✓ Image uploaded</span>
+                : <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>No image</span>
+              }
               <button className="btn btn-ghost btn-sm" onClick={() => removeVariant(v.tempId)} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
             </div>
           ))}
-          <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr 120px auto', gap: 8, marginTop: 12 }}>
-            <select value={vForm.brand} onChange={e => setVForm(f => ({ ...f, brand: e.target.value }))}>{BRANDS.map(b => <option key={b}>{b}</option>)}</select>
-            <input value={vForm.sku} onChange={e => setVForm(f => ({ ...f, sku: e.target.value }))} placeholder="SKU e.g. MUG-BRH-001" />
-            <input type="number" value={vForm.moq_override} onChange={e => setVForm(f => ({ ...f, moq_override: e.target.value }))} placeholder="MOQ override" />
-            <button className="btn btn-secondary btn-sm" onClick={addVariant}>{Icon.plus} Add</button>
+
+          {/* Add variant form */}
+          <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: 16, marginTop: 12 }}>
+            <div style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 12 }}>New Variant</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 10, marginBottom: 10 }}>
+              <div className="form-group">
+                <label>Brand</label>
+                <select value={vForm.brand} onChange={e => setVForm(f => ({ ...f, brand: e.target.value }))}>
+                  {BRANDS.map(b => <option key={b}>{b}</option>)}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>SKU</label>
+                <input value={vForm.sku} onChange={e => setVForm(f => ({ ...f, sku: e.target.value }))} placeholder="e.g. MUG-BRH-001" />
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 12 }}>
+              <label>Variant Image (branded mockup)</label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 12px', border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius-md)', background: 'var(--surface)' }}>
+                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleVImageChange} />
+                {vForm.imagePreview
+                  ? <><img src={vForm.imagePreview} alt="preview" style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 'var(--radius)' }} /><span style={{ fontSize: 11, color: 'var(--green)' }}>✓ Image selected</span></>
+                  : <><span style={{ color: 'var(--text-muted)' }}>{Icon.upload}</span><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Click to upload branded image</span></>
+                }
+              </label>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={addVariant} disabled={!vForm.sku.trim()}>{Icon.plus} Add Variant</button>
           </div>
+
           <div className="divider" />
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost btn-sm" onClick={() => setStep(1)}>← Back</button>
