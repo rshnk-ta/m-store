@@ -120,7 +120,10 @@ export default function App() {
         {/* SIDEBAR */}
         <aside className="sidebar">
           <div className="sidebar-logo">
-            <h1>M-Store</h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 2 }}>
+              <img src="/logo.png" alt="M-Store" style={{ width: 28, height: 28, borderRadius: 6 }} />
+              <h1>M-Store</h1>
+            </div>
             <span>Merch Order Platform</span>
           </div>
           <div className="sidebar-section">

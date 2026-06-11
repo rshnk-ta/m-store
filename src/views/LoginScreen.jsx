@@ -20,7 +20,10 @@ export default function LoginScreen() {
   return (
     <div className="login-screen">
       <div className="login-card">
-        <div className="login-logo">M-Store</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+          <img src="/logo.png" alt="M-Store" style={{ width: 40, height: 40, borderRadius: 8 }} />
+          <div className="login-logo">M-Store</div>
+        </div>
         <div className="login-sub">Merch Order Platform · Mohinani Group</div>
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="form-group">
