@@ -9,11 +9,12 @@ import { uploadImage, notifyUsers } from '../lib/db';
 export function AdminCatalog({ products, orders, brands, onRefresh, toast }) {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
+  const [activeOnly, setActiveOnly] = useState(true);
   const [modal, setModal] = useState(null);
 
-  const cats = ['All', ...Array.from(new Set(products.filter(p => p.status === 'active').map(p => p.category)))];
-  const active = products.filter(p =>
-    p.status === 'active' &&
+  const visibleProducts = products.filter(p => activeOnly ? p.status === 'active' : true);
+  const cats = ['All', ...Array.from(new Set(visibleProducts.map(p => p.category)))];
+  const filtered = visibleProducts.filter(p =>
     (catFilter === 'All' || p.category === catFilter) &&
     p.name.toLowerCase().includes(search.toLowerCase())
   );
@@ -29,14 +30,18 @@ export function AdminCatalog({ products, orders, brands, onRefresh, toast }) {
   return (
     <div>
       <div className="section-header">
-        <div><div className="section-title">Catalog</div><div className="section-desc">Active merchandise items</div></div>
+        <div><div className="section-title">Catalog</div><div className="section-desc">{filtered.length} item{filtered.length !== 1 ? 's' : ''}</div></div>
       </div>
       <div className="filter-row">
         <input className="search-input" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} />
         {cats.map(c => <span key={c} className={`filter-chip${catFilter === c ? ' active' : ''}`} onClick={() => setCatFilter(c)}>{c}</span>)}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginLeft: 'auto', fontSize: 11, color: 'var(--text-secondary)', textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
+          <input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} style={{ width: 'auto', cursor: 'pointer' }} />
+          Active items only
+        </label>
       </div>
       <div className="card-grid">
-        {active.map(p => (
+        {filtered.map(p => (
           <ProductCard key={p.id} p={p} orders={orders} showStatus>
             <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
               <button className="btn btn-secondary btn-sm" onClick={() => setModal(p)}>{Icon.edit} Edit</button>
@@ -44,11 +49,11 @@ export function AdminCatalog({ products, orders, brands, onRefresh, toast }) {
             </div>
           </ProductCard>
         ))}
-        {active.length === 0 && (
+        {filtered.length === 0 && (
           <div className="empty" style={{ gridColumn: '1/-1' }}>
             <div className="empty-icon">◻</div>
-            <div className="empty-title">No active items</div>
-            <div className="empty-desc">Approve submissions to populate the catalog</div>
+            <div className="empty-title">{activeOnly ? 'No active items' : 'No items found'}</div>
+            <div className="empty-desc">{activeOnly ? 'Approve submissions to populate the catalog' : 'Try adjusting your filters'}</div>
           </div>
         )}
       </div>

@@ -14,12 +14,13 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const [sampleModal, setSampleModal] = useState(null);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
+  const [activeOnly, setActiveOnly] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
   const market = profile?.market;
-  const active = products.filter(p => p.status === 'active');
-  const cats = ['All', ...Array.from(new Set(active.map(p => p.category)))];
-  const filtered = active.filter(p =>
+  const visibleProducts = products.filter(p => activeOnly ? p.status === 'active' : p.status === 'active' || p.status === 'draft');
+  const cats = ['All', ...Array.from(new Set(visibleProducts.map(p => p.category)))];
+  const filtered = visibleProducts.filter(p =>
     (catFilter === 'All' || p.category === catFilter) &&
     p.name.toLowerCase().includes(search.toLowerCase())
   );
@@ -120,6 +121,10 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
       <div className="filter-row">
         <input className="search-input" placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)} />
         {cats.map(c => <span key={c} className={`filter-chip${catFilter === c ? ' active' : ''}`} onClick={() => setCatFilter(c)}>{c}</span>)}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginLeft: 'auto', fontSize: 11, color: 'var(--text-secondary)', textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
+          <input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} style={{ width: 'auto', cursor: 'pointer' }} />
+          Active items only
+        </label>
       </div>
       <div className="card-grid">
         {filtered.map(p => (
@@ -320,6 +325,46 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
       {selected && (
         <OrderDetailModal order={selected} product={selected.product} shipments={shipments.filter(s => s.order_id === selected.id)} onClose={() => setSelected(null)} onRefresh={onRefresh} toast={toast} readOnly />
       )}
+    </div>
+  );
+}
+// ── SUPPLIER CATALOG (read-only reference view) ────────────────────────────
+export function SupplierCatalog({ products, orders }) {
+  const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState('All');
+  const [activeOnly, setActiveOnly] = useState(true);
+
+  const visibleProducts = products.filter(p => activeOnly ? p.status === 'active' : true);
+  const cats = ['All', ...Array.from(new Set(visibleProducts.map(p => p.category)))];
+  const filtered = visibleProducts.filter(p =>
+    (catFilter === 'All' || p.category === catFilter) &&
+    p.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div>
+      <div className="section-header">
+        <div><div className="section-title">Catalog</div><div className="section-desc">All merchandise items — reference view</div></div>
+      </div>
+      <div className="filter-row">
+        <input className="search-input" placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)} />
+        {cats.map(c => <span key={c} className={`filter-chip${catFilter === c ? ' active' : ''}`} onClick={() => setCatFilter(c)}>{c}</span>)}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginLeft: 'auto', fontSize: 11, color: 'var(--text-secondary)', textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
+          <input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} style={{ width: 'auto', cursor: 'pointer' }} />
+          Active items only
+        </label>
+      </div>
+      <div className="card-grid">
+        {filtered.map(p => (
+          <ProductCard key={p.id} p={p} orders={orders.filter(o => o.type === 'standard')} showStatus />
+        ))}
+        {filtered.length === 0 && (
+          <div className="empty" style={{ gridColumn: '1/-1' }}>
+            <div className="empty-icon">◻</div>
+            <div className="empty-title">No items found</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

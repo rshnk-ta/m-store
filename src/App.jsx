@@ -7,7 +7,7 @@ import { NotificationsPanel } from './views/AdminViews';
 import LoginScreen from './views/LoginScreen';
 import { AdminCatalog, ApprovalQueue, AdminOrders, BrandsManager } from './views/AdminViews';
 import { SupplierSubmitItem, SupplierOrders, SupplierConsolidated, SupplierSamples, SupplierSubmissions } from './views/SupplierViews';
-import { MarketCatalog, MarketOrders } from './views/MarketViews';
+import { MarketCatalog, MarketOrders, SupplierCatalog } from './views/MarketViews';
 
 const NAV = {
   admin: [
@@ -21,6 +21,7 @@ const NAV = {
     { key: 'my-orders', label: 'My Orders',  icon: Icon.orders },
   ],
   supplier: [
+    { key: 'catalog',      label: 'Catalog',         icon: Icon.catalog },
     { key: 'consolidated', label: 'Consolidated',    icon: Icon.supply },
     { key: 'orders',       label: 'Orders',          icon: Icon.orders },
     { key: 'samples',      label: 'Samples',         icon: Icon.sample },
@@ -166,6 +167,7 @@ export default function App() {
             {role === 'admin' && page === 'brands'    && <BrandsManager brands={brands} onRefresh={fetchAll} toast={showToast} />}
             {role === 'market' && page === 'catalog'   && <MarketCatalog products={products} orders={orders} brands={brands} onRefresh={fetchAll} toast={showToast} />}
             {role === 'market' && page === 'my-orders' && <MarketOrders products={products} orders={orders} shipments={shipments} onRefresh={fetchAll} toast={showToast} />}
+            {role === 'supplier' && page === 'catalog'       && <SupplierCatalog products={products} orders={orders} />}
             {role === 'supplier' && page === 'consolidated' && <SupplierConsolidated products={products} orders={orders} onRefresh={fetchAll} toast={showToast} />}
             {role === 'supplier' && page === 'orders'       && <SupplierOrders products={products} orders={orders} shipments={shipments} onRefresh={fetchAll} toast={showToast} />}
             {role === 'supplier' && page === 'samples'      && <SupplierSamples products={products} orders={orders} onRefresh={fetchAll} toast={showToast} />}
