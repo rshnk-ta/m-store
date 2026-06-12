@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ORDER_STAGES, SAMPLE_STAGES, STAGE_COLORS } from '../lib/constants';
 
 // ── ICONS ──────────────────────────────────────────────────────────────────
@@ -113,11 +113,30 @@ export function ProductCard({ p, orders = [], onAction, actionLabel, actionDisab
   const [activeVariant, setActiveVariant] = useState(p.product_variants?.[0] || null);
   const displayImage = activeVariant?.image_url || p.image_url;
 
+  // Keep activeVariant in sync if product_variants updates
+  useEffect(() => {
+    if (p.product_variants?.length > 0 && !activeVariant) {
+      setActiveVariant(p.product_variants[0]);
+    }
+  }, [p.product_variants]);
+
+  const totalOrdered = orders.filter(o => o.product_id === p.id && o.type === 'standard').reduce((s, o) => s + o.qty, 0);
+  const moqPct = Math.min(100, Math.round((totalOrdered / p.moq) * 100));
+  const moqReached = moqPct >= 100;
+  const moqClose = moqPct >= 70 && !moqReached;
+
   return (
     <div className="product-card">
       <div className="product-card-img-wrap">
         {displayImage
-          ? <img className="product-card-img" src={displayImage} alt={p.name} key={displayImage} onError={e => { e.target.style.opacity = 0; }} />
+          ? <img
+              className="product-card-img"
+              src={displayImage}
+              alt={p.name}
+              key={displayImage}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+              onError={e => { e.target.style.opacity = 0; }}
+            />
           : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 11 }}>No image</div>
         }
         {activeVariant && (
@@ -145,7 +164,19 @@ export function ProductCard({ p, orders = [], onAction, actionLabel, actionDisab
             ~{p.production_lead_days}d production · ~{p.shipping_lead_days}d shipping (est.)
           </div>
         )}
-        {orders.length > 0 && <MoqBar product={p} orders={orders} />}
+
+        {/* MOQ progress bar — always visible */}
+        <div className="moq-section">
+          <div className="moq-label">
+            <span>Orders received</span>
+            <strong>{totalOrdered} / {p.moq}</strong>
+          </div>
+          <div className="moq-track">
+            <div className={`moq-fill${moqReached ? ' reached' : moqClose ? ' close' : ''}`} style={{ width: `${moqPct}%` }} />
+          </div>
+          {moqReached && <div style={{ fontSize: 10, color: 'var(--green)', marginTop: 4, fontWeight: 500 }}>✓ MOQ reached</div>}
+        </div>
+
         {p.product_variants?.length > 0 && (
           <>
             <div className="variants-label">Brand variants</div>

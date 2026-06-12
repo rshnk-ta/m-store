@@ -46,7 +46,8 @@ export default function App() {
     if (!user) return;
     setDataLoading(true);
     const [{ data: prods }, { data: ords }, { data: ships }] = await Promise.all([
-      supabase.from('products').select('*, product_variants(*)').order('created_at', { ascending: false }),
+      supabase.from('products').select('*, product_variants(*)')
+        .order('created_at', { ascending: false }),
       supabase.from('orders').select('*').order('placed_at', { ascending: false }),
       supabase.from('shipments').select('*').order('created_at', { ascending: false }),
     ]);
