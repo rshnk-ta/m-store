@@ -313,7 +313,7 @@ function LifecycleBarInline({ status, type }) {
 }
 
 // ── SHIPMENTS TAB ──────────────────────────────────────────────────────────
-function ShipmentsTab({ order, shipments, onRefresh, toast, readOnly, profile }) {
+export function ShipmentsTab({ order, shipments, onRefresh, toast, readOnly, profile }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ destination: MARKETS[0], container_no: '', po_reference: '', etd: '', eta: '', notes: '' });
   const [saving, setSaving] = useState(false);
@@ -392,7 +392,7 @@ function ShipmentsTab({ order, shipments, onRefresh, toast, readOnly, profile })
 }
 
 // ── TIMELINE TAB ───────────────────────────────────────────────────────────
-function TimelineTab({ orderId }) {
+export function TimelineTab({ orderId }) {
   const [log, setLog] = useState([]);
   useEffect(() => {
     supabase.from('timeline_log').select('*').eq('order_id', orderId).order('created_at', { ascending: true })

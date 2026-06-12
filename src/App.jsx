@@ -5,7 +5,7 @@ import { CSS } from './lib/constants';
 import { Icon, Toast, Spinner } from './components/UI';
 import LoginScreen from './views/LoginScreen';
 import { AdminCatalog, ApprovalQueue, AdminOrders } from './views/AdminViews';
-import { SupplierSubmitItem, SupplierOrders, SupplierConsolidated, SupplierSamples } from './views/SupplierViews';
+import { SupplierSubmitItem, SupplierOrders, SupplierConsolidated, SupplierSamples, SupplierSubmissions } from './views/SupplierViews';
 import { MarketCatalog, MarketOrders } from './views/MarketViews';
 
 // ── NAV CONFIG ──────────────────────────────────────────────────────────────
@@ -23,6 +23,7 @@ const NAV = {
     { key: 'consolidated', label: 'Consolidated',    icon: Icon.supply },
     { key: 'orders',       label: 'Orders',          icon: Icon.orders },
     { key: 'samples',      label: 'Samples',         icon: Icon.sample },
+    { key: 'submissions',  label: 'My Submissions',  icon: Icon.inbox },
     { key: 'submit',       label: 'Submit New Item', icon: Icon.plus },
   ],
 };
@@ -108,9 +109,9 @@ export default function App() {
   const userInitials = profile.name?.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 
   const pageTitle = {
-    catalog: 'Catalog', approvals: 'Pending Approval', orders: role === 'market' ? 'Orders' : 'Orders',
+    catalog: 'Catalog', approvals: 'Pending Approval', orders: 'Orders',
     'my-orders': 'My Orders', consolidated: 'Consolidated', submit: 'Submit New Item',
-    samples: 'Samples',
+    samples: 'Samples', submissions: 'My Submissions',
   }[page] || '';
 
   return (
@@ -172,6 +173,7 @@ export default function App() {
             {role === 'supplier' && page === 'consolidated' && <SupplierConsolidated products={products} orders={orders} onRefresh={fetchAll} toast={showToast} />}
             {role === 'supplier' && page === 'orders'       && <SupplierOrders products={products} orders={orders} shipments={shipments} onRefresh={fetchAll} toast={showToast} />}
             {role === 'supplier' && page === 'samples'      && <SupplierSamples products={products} orders={orders} onRefresh={fetchAll} toast={showToast} />}
+            {role === 'supplier' && page === 'submissions'  && <SupplierSubmissions products={products} onRefresh={fetchAll} toast={showToast} />}
             {role === 'supplier' && page === 'submit'       && <SupplierSubmitItem onRefresh={fetchAll} toast={showToast} />}
           </div>
         </div>
