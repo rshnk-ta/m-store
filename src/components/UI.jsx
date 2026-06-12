@@ -129,22 +129,37 @@ export function LifecycleBar({ status, type = 'standard' }) {
 // ── PRODUCT CARD ──────────────────────────────────────────────────────────
 export function ProductCard({ p, orders = [], children, showStatus }) {
   const [activeVariant, setActiveVariant] = useState(null);
-  const [lightbox, setLightbox] = useState(null); // { images, index }
+  const [imgIdx, setImgIdx] = useState(0);
+  const [lightbox, setLightbox] = useState(null);
 
   useEffect(() => {
-    if (p.product_variants?.length > 0) setActiveVariant(p.product_variants[0]);
+    if (p.product_variants?.length > 0) {
+      setActiveVariant(p.product_variants.find(v => v.is_active !== false) || p.product_variants[0]);
+    }
   }, [p.id]);
-
-  // Collect all images for active variant (variant_images + fallback to image_url)
-  const variantImages = activeVariant?.variant_images?.map(vi => vi.image_url) ||
-    (activeVariant?.image_url ? [activeVariant.image_url] : []);
-  const displayImages = variantImages.length > 0 ? variantImages : (p.image_url ? [p.image_url] : []);
-  const [imgIdx, setImgIdx] = useState(0);
 
   useEffect(() => { setImgIdx(0); }, [activeVariant?.id]);
 
-  const totalOrdered = orders.filter(o => o.product_id === p.id && o.type === 'standard').reduce((s, o) => s + o.qty, 0);
-  const moqPct = Math.min(100, Math.round((totalOrdered / p.moq) * 100));
+  // Resolve images: variant_images table first, then image_url fallback, then product image
+  const getImages = (variant) => {
+    if (!variant) return p.image_url ? [p.image_url] : [];
+    const fromTable = (variant.variant_images || [])
+      .slice()
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+      .map(vi => vi.image_url)
+      .filter(Boolean);
+    if (fromTable.length > 0) return fromTable;
+    if (variant.image_url) return [variant.image_url];
+    return p.image_url ? [p.image_url] : [];
+  };
+
+  const displayImages = getImages(activeVariant);
+
+  // MOQ bar: only count collecting (pending, not yet accepted) orders
+  const collectingQty = orders
+    .filter(o => o.product_id === p.id && o.type === 'standard' && o.status === 'collecting')
+    .reduce((s, o) => s + o.qty, 0);
+  const moqPct = Math.min(100, Math.round((collectingQty / p.moq) * 100));
   const moqReached = moqPct >= 100;
   const moqClose = moqPct >= 70 && !moqReached;
 
@@ -153,7 +168,13 @@ export function ProductCard({ p, orders = [], children, showStatus }) {
       <div className="product-card">
         <div className="product-card-img-wrap" onClick={() => displayImages.length > 0 && setLightbox({ images: displayImages, index: imgIdx })}>
           {displayImages.length > 0
-            ? <img className="product-card-img" src={displayImages[imgIdx]} alt={p.name} key={displayImages[imgIdx]} onError={e => { e.target.style.opacity = 0; }} />
+            ? <img
+                className="product-card-img"
+                src={displayImages[imgIdx]}
+                alt={`${p.name}${activeVariant ? ' — ' + activeVariant.brand : ''}`}
+                key={`${activeVariant?.id || 'default'}-${imgIdx}`}
+                onError={e => { e.target.style.opacity = 0; }}
+              />
             : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 11 }}>No image</div>
           }
           {activeVariant && (
@@ -185,15 +206,15 @@ export function ProductCard({ p, orders = [], children, showStatus }) {
             <div className="product-card-lead">~{p.production_lead_days}d production · ~{p.shipping_lead_days}d shipping (est.)</div>
           )}
           <div className="moq-section">
-            <div className="moq-label"><span>Orders received</span><strong>{totalOrdered} / {p.moq}</strong></div>
+            <div className="moq-label"><span>Pending orders</span><strong>{collectingQty} / {p.moq}</strong></div>
             <div className="moq-track">
               <div className={`moq-fill${moqReached ? ' reached' : moqClose ? ' close' : ''}`} style={{ width: `${moqPct}%` }} />
             </div>
-            {moqReached && <div style={{ fontSize: 10, color: 'var(--green)', marginTop: 4, fontWeight: 500 }}>✓ MOQ reached</div>}
+            {moqReached && <div style={{ fontSize: 10, color: 'var(--green)', marginTop: 4, fontWeight: 500 }}>✓ MOQ reached — awaiting supplier acceptance</div>}
           </div>
-          {p.product_variants?.length > 0 && (
+          {p.product_variants?.filter(v => v.is_active !== false).length > 0 && (
             <>
-              <div className="variants-label">Brand variants</div>
+              <div className="variants-label">Brand variants — click to preview</div>
               <div className="variant-pills">
                 {p.product_variants.filter(v => v.is_active !== false).map(v => (
                   <span key={v.id} className="variant-pill" onClick={() => setActiveVariant(v)}
@@ -216,6 +237,7 @@ export function ProductCard({ p, orders = [], children, showStatus }) {
     </>
   );
 }
+
 
 // ── MULTI IMAGE UPLOAD ────────────────────────────────────────────────────
 export function MultiImageUpload({ label = 'Images', onChange }) {

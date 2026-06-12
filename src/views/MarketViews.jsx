@@ -9,7 +9,8 @@ import { notifyUsers } from '../lib/db';
 // ── MARKET CATALOG ─────────────────────────────────────────────────────────
 export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const { profile } = useAuth();
-  const [cart, setCart] = useState({}); // { [productId_variantId]: qty }
+  const [cart, setCart] = useState({}); // { [productId__variantId]: newQty } — additional qty to add
+  const [editingOrder, setEditingOrder] = useState(null); // { orderId, newQty }
   const [sampleModal, setSampleModal] = useState(null);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
@@ -22,6 +23,10 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     (catFilter === 'All' || p.category === catFilter) &&
     p.name.toLowerCase().includes(search.toLowerCase())
   );
+
+  // Get existing pending (collecting) order for this market+variant
+  const getPendingOrder = (productId, variantId) =>
+    orders.find(o => o.product_id === productId && o.variant_id === variantId && o.market === market && o.type === 'standard' && o.status === 'collecting');
 
   const cartKey = (productId, variantId) => `${productId}__${variantId}`;
   const setQty = (productId, variantId, qty) => {
@@ -36,6 +41,31 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     return sum + (p ? p.unit_price * qty : 0);
   }, 0);
 
+  // Update qty of an existing pending order
+  const updatePendingQty = async (orderId, newQty) => {
+    if (newQty <= 0) {
+      await supabase.from('orders').delete().eq('id', orderId);
+      toast('Order removed', 'default');
+    } else {
+      // Recalculate status
+      const order = orders.find(o => o.id === orderId);
+      const product = products.find(p => p.id === order?.product_id);
+      const otherQty = orders
+        .filter(o => o.product_id === order?.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId)
+        .reduce((s, o) => s + o.qty, 0);
+      const newTotal = otherQty + newQty;
+      const status = product && newTotal >= product.moq ? 'moq_reached' : 'collecting';
+      await supabase.from('orders').update({ qty: newQty, status, updated_at: new Date().toISOString() }).eq('id', orderId);
+      if (status === 'moq_reached') {
+        const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+        if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product?.name}" has reached its MOQ.`, { product_id: order?.product_id, order_id: orderId });
+      }
+      toast('Order updated', 'success');
+    }
+    setEditingOrder(null);
+    onRefresh();
+  };
+
   const submitCart = async () => {
     if (cartCount === 0) return;
     setSubmitting(true);
@@ -46,33 +76,38 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
         const product = products.find(x => x.id === productId);
         if (!product) continue;
 
-        // Check total orders including this one
-        const currentQty = orders.filter(o => o.product_id === productId && o.type === 'standard').reduce((s, o) => s + o.qty, 0);
-        const newTotal = currentQty + qty;
-        const status = newTotal >= product.moq ? 'moq_reached' : 'collecting';
+        // Check if there's already a pending order for this variant from this market
+        const existing = getPendingOrder(productId, variantId);
+        const currentQty = orders.filter(o => o.product_id === productId && o.type === 'standard' && o.status === 'collecting').reduce((s, o) => s + o.qty, 0);
 
-        const { data: newOrder } = await supabase.from('orders').insert({
-          product_id: productId, variant_id: variantId, market,
-          qty, type: 'standard', status,
-          placed_by: profile?.id, placed_at: new Date().toISOString(),
-        }).select().single();
+        if (existing) {
+          // Add to existing pending order
+          const newQty = existing.qty + qty;
+          const newTotal = currentQty - existing.qty + newQty;
+          const status = newTotal >= product.moq ? 'moq_reached' : 'collecting';
+          await supabase.from('orders').update({ qty: newQty, status, updated_at: new Date().toISOString() }).eq('id', existing.id);
+        } else {
+          // Create new order
+          const newTotal = currentQty + qty;
+          const status = newTotal >= product.moq ? 'moq_reached' : 'collecting';
+          const { data: newOrder } = await supabase.from('orders').insert({
+            product_id: productId, variant_id: variantId, market,
+            qty, type: 'standard', status,
+            placed_by: profile?.id, placed_at: new Date().toISOString(),
+          }).select().single();
+          if (newOrder) await supabase.from('timeline_log').insert({ order_id: newOrder.id, stage: 'collecting', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
 
-        // Log timeline
-        await supabase.from('timeline_log').insert({ order_id: newOrder.id, stage: 'collecting', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
-
-        // Notify supplier if MOQ reached
-        if (status === 'moq_reached') {
-          const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
-          if (supplierUsers?.length) {
-            await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ and is ready for acceptance.`, { product_id: productId, order_id: newOrder.id });
+          if (status === 'moq_reached') {
+            const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+            if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ.`, { product_id: productId, order_id: newOrder?.id });
           }
         }
       }
-      toast(`${cartCount} order${cartCount !== 1 ? 's' : ''} placed`, 'success');
+      toast(`${cartCount} order line${cartCount !== 1 ? 's' : ''} submitted`, 'success');
       setCart({});
       onRefresh();
     } catch (e) {
-      toast('Error placing orders: ' + e.message, 'error');
+      toast('Error: ' + e.message, 'error');
     }
     setSubmitting(false);
   };
@@ -93,17 +128,51 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
               <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 }}>Order quantities</div>
               {p.product_variants?.filter(v => v.is_active !== false).map(v => {
                 const key = cartKey(p.id, v.id);
-                const qty = cart[key] || '';
+                const newQty = cart[key] || '';
+                const pendingOrder = getPendingOrder(p.id, v.id);
+                const isEditing = editingOrder?.orderId === pendingOrder?.id;
+
                 return (
-                  <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.color, flexShrink: 0 }} />
-                    <span style={{ fontSize: 11, color: 'var(--text-secondary)', flex: 1 }}>{v.brand}</span>
-                    <input
-                      type="number" min="0" placeholder="0"
-                      value={qty}
-                      onChange={e => setQty(p.id, v.id, parseInt(e.target.value) || 0)}
-                      style={{ width: 70, fontSize: 12, textAlign: 'center' }}
-                    />
+                  <div key={v.id} style={{ marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.color, flexShrink: 0 }} />
+                      <span style={{ fontSize: 11, color: 'var(--text-secondary)', flex: 1 }}>{v.brand}</span>
+                      <input
+                        type="number" min="0" placeholder="0"
+                        value={newQty}
+                        onChange={e => setQty(p.id, v.id, parseInt(e.target.value) || 0)}
+                        style={{ width: 70, fontSize: 12, textAlign: 'center' }}
+                      />
+                    </div>
+                    {/* Show existing pending order */}
+                    {pendingOrder && (
+                      <div style={{ marginLeft: 15, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--accent-warm)' }}>
+                        {isEditing ? (
+                          <>
+                            <span>Pending:</span>
+                            <input
+                              type="number" min="0"
+                              value={editingOrder.newQty}
+                              onChange={e => setEditingOrder(eo => ({ ...eo, newQty: parseInt(e.target.value) || 0 }))}
+                              style={{ width: 60, fontSize: 11, textAlign: 'center', padding: '2px 6px' }}
+                              autoFocus
+                            />
+                            <button className="btn btn-sm btn-success" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => updatePendingQty(pendingOrder.id, editingOrder.newQty)}>Save</button>
+                            <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => setEditingOrder(null)}>✕</button>
+                          </>
+                        ) : (
+                          <>
+                            <span style={{ background: '#FFFBEB', padding: '1px 7px', borderRadius: 999, border: '1px solid #FDE68A' }}>
+                              {pendingOrder.qty} pending
+                            </span>
+                            <button className="btn btn-ghost btn-sm" style={{ padding: '1px 6px', fontSize: 10, color: 'var(--accent-warm)' }}
+                              onClick={() => setEditingOrder({ orderId: pendingOrder.id, newQty: pendingOrder.qty })}>
+                              Edit
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -114,11 +183,10 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
         {filtered.length === 0 && <div className="empty" style={{ gridColumn: '1/-1' }}><div className="empty-icon">◻</div><div className="empty-title">No items found</div></div>}
       </div>
 
-      {/* Sticky cart bar */}
       {cartCount > 0 && (
         <div className="cart-bar">
           <div className="cart-summary">
-            {Icon.cart} <strong>{cartCount}</strong> line{cartCount !== 1 ? 's' : ''} · est. <strong>${cartTotal.toFixed(2)}</strong>
+            {Icon.cart} <strong>{cartCount}</strong> new line{cartCount !== 1 ? 's' : ''} · est. <strong>${cartTotal.toFixed(2)}</strong>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost btn-sm" onClick={() => setCart({})}>Clear</button>

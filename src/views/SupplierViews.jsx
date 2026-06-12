@@ -2,19 +2,52 @@ import { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { Modal, Icon, StageBadge, MultiImageUpload } from '../components/UI';
-import { CATEGORIES } from '../lib/constants';
+import { CATEGORIES, CATEGORY_ABBR } from '../lib/constants';
 import { OrderDetailModal, ShipmentsTab, TimelineTab } from './AdminViews';
 import { uploadImage, notifyUsers } from '../lib/db';
 
+// ── SKU GENERATOR ──────────────────────────────────────────────────────────
+function generateSku(brandAbbr, categoryAbbr, existingVariants) {
+  if (!brandAbbr || !categoryAbbr) return '';
+  const prefix = `${brandAbbr}_${categoryAbbr}`;
+  const existing = existingVariants.filter(v => (v.sku || '').startsWith(prefix));
+  const maxSerial = existing.reduce((max, v) => {
+    const parts = v.sku.split('_');
+    const serial = parseInt(parts[parts.length - 1]) || 0;
+    return Math.max(max, serial);
+  }, 0);
+  return `${prefix}_${String(maxSerial + 1).padStart(3, '0')}`;
+}
+
 // ── VARIANT FORM ───────────────────────────────────────────────────────────
-function VariantForm({ brands, onAdd }) {
+function VariantForm({ brands, category, existingVariants = [], onAdd }) {
   const [vForm, setVForm] = useState({ brand: brands[0]?.name || '', sku: '', imageFiles: [] });
+
+  // Auto-generate SKU when brand changes
+  const handleBrandChange = (brandName) => {
+    const brand = brands.find(b => b.name === brandName);
+    const catAbbr = CATEGORY_ABBR[category] || 'XX';
+    const brandAbbr = brand?.abbreviation || brandName.slice(0, 3).toUpperCase();
+    const sku = generateSku(brandAbbr, catAbbr, existingVariants);
+    setVForm(f => ({ ...f, brand: brandName, sku }));
+  };
+
+  // Auto-generate on mount
+  useState(() => {
+    if (brands[0] && category) handleBrandChange(brands[0].name);
+  });
 
   const handleAdd = () => {
     if (!vForm.sku.trim() || !vForm.brand) return;
     const brand = brands.find(b => b.name === vForm.brand);
     onAdd({ tempId: Math.random().toString(36).slice(2), brand: vForm.brand, sku: vForm.sku, color: brand?.color || '#000000', imageFiles: vForm.imageFiles });
-    setVForm({ brand: brands[0]?.name || '', sku: '', imageFiles: [] });
+    // Auto-generate next SKU
+    const catAbbr = CATEGORY_ABBR[category] || 'XX';
+    const brandAbbr = brand?.abbreviation || vForm.brand.slice(0, 3).toUpperCase();
+    const nextBrand = brands.find(b => b.name !== vForm.brand) || brands[0];
+    const nextBrandAbbr = nextBrand?.abbreviation || nextBrand?.name.slice(0, 3).toUpperCase() || '';
+    const nextSku = generateSku(nextBrandAbbr, catAbbr, [...existingVariants, { sku: vForm.sku }]);
+    setVForm({ brand: nextBrand?.name || brands[0]?.name || '', sku: nextSku, imageFiles: [] });
   };
 
   return (
@@ -23,13 +56,18 @@ function VariantForm({ brands, onAdd }) {
       <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10, marginBottom: 12 }}>
         <div className="form-group">
           <label>Brand</label>
-          <select value={vForm.brand} onChange={e => setVForm(f => ({ ...f, brand: e.target.value }))}>
+          <select value={vForm.brand} onChange={e => handleBrandChange(e.target.value)}>
             {brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
           </select>
         </div>
         <div className="form-group">
-          <label>SKU</label>
-          <input value={vForm.sku} onChange={e => setVForm(f => ({ ...f, sku: e.target.value }))} placeholder="e.g. MUG-BRH-001" />
+          <label>SKU (auto-generated, editable)</label>
+          <input
+            value={vForm.sku}
+            onChange={e => setVForm(f => ({ ...f, sku: e.target.value }))}
+            placeholder="e.g. BRH_DW_001"
+            style={{ fontFamily: 'monospace', fontSize: 12 }}
+          />
         </div>
       </div>
       <MultiImageUpload label="Variant Images (branded mockups)" onChange={(files) => setVForm(f => ({ ...f, imageFiles: files }))} />
@@ -142,7 +180,7 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
               <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter(x => x.tempId !== v.tempId))} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
             </div>
           ))}
-          <VariantForm brands={brands} onAdd={(v) => setVariants(prev => [...prev, v])} />
+          <VariantForm brands={brands} category={form.category} existingVariants={variants} onAdd={(v) => setVariants(prev => [...prev, v])} />
           <div className="divider" />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn btn-ghost btn-sm" onClick={() => setStep(1)}>← Back</button>
@@ -262,7 +300,7 @@ function SupplierEditModal({ product, brands, onClose, onSave, toast }) {
           <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter(x => x.tempId !== v.tempId))} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
         </div>
       ))}
-      <VariantForm brands={brands} onAdd={(v) => setVariants(prev => [...prev, { ...v, isExisting: false }])} />
+      <VariantForm brands={brands} category={form.category} existingVariants={variants} onAdd={(v) => setVariants(prev => [...prev, { ...v, isExisting: false }])} />
     </Modal>
   );
 }

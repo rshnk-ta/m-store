@@ -211,13 +211,14 @@ export function AdminOrders({ products, orders, shipments, onRefresh, toast }) {
       </div>
       <div className="card table-wrap">
         <table>
-          <thead><tr><th>Product</th><th>Brand</th><th>Market</th><th>Type</th><th>Qty</th><th>Status</th><th>Date</th><th></th></tr></thead>
+          <thead><tr><th>Product</th><th>Brand</th><th>SKU</th><th>Market</th><th>Type</th><th>Qty</th><th>Status</th><th>Date</th><th></th></tr></thead>
           <tbody>
-            {visible.length === 0 && <tr><td colSpan={8}><div className="empty"><div className="empty-icon">○</div><div className="empty-title">No orders</div></div></td></tr>}
+            {visible.length === 0 && <tr><td colSpan={9}><div className="empty"><div className="empty-icon">○</div><div className="empty-title">No orders</div></div></td></tr>}
             {visible.map(o => (
               <tr key={o.id}>
                 <td style={{ fontWeight: 500 }}>{o.product?.name || '—'}</td>
                 <td>{o.variant && <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: o.variant.color, display: 'inline-block' }} />{o.variant.brand}</span>}</td>
+                <td style={{ color: 'var(--text-muted)', fontSize: 11, fontFamily: 'monospace' }}>{o.variant?.sku || '—'}</td>
                 <td><span className="badge badge-grey">{o.market}</span></td>
                 <td><span className={`badge ${o.type === 'sample' ? 'badge-blue' : 'badge-grey'}`}>{o.type}</span></td>
                 <td>{o.qty}</td>
@@ -452,15 +453,16 @@ function ProductEditModal({ product, brands, onClose, onSave, toast }) {
 
 // ── BRANDS MANAGER ─────────────────────────────────────────────────────────
 export function BrandsManager({ brands, onRefresh, toast }) {
-  const [form, setForm] = useState({ name: '', color: '#000000' });
+  const [form, setForm] = useState({ name: '', color: '#000000', abbreviation: '' });
   const [saving, setSaving] = useState(false);
 
   const addBrand = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
-    const { error } = await supabase.from('brands').insert({ name: form.name, color: form.color, sort_order: brands.length });
+    const abbr = form.abbreviation || form.name.slice(0, 3).toUpperCase();
+    const { error } = await supabase.from('brands').insert({ name: form.name, color: form.color, abbreviation: abbr, sort_order: brands.length });
     if (error) { toast('Error: ' + error.message, 'error'); } else { toast('Brand added', 'success'); onRefresh(); }
-    setForm({ name: '', color: '#000000' });
+    setForm({ name: '', color: '#000000', abbreviation: '' });
     setSaving(false);
   };
 
@@ -482,7 +484,7 @@ export function BrandsManager({ brands, onRefresh, toast }) {
       </div>
       <div className="card" style={{ padding: 0, marginBottom: 20 }}>
         <table>
-          <thead><tr><th>Brand</th><th>Color</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Brand</th><th>Abbreviation</th><th>Color</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {brands.map(b => (
               <tr key={b.id}>
@@ -490,6 +492,7 @@ export function BrandsManager({ brands, onRefresh, toast }) {
                   <span style={{ width: 10, height: 10, borderRadius: '50%', background: b.color, display: 'inline-block' }} />
                   {b.name}
                 </td>
+                <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text-secondary)' }}>{b.abbreviation || '—'}</td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <input type="color" value={b.color} onChange={e => updateColor(b.id, e.target.value)} style={{ width: 32, height: 28, padding: 2, cursor: 'pointer' }} />
@@ -507,10 +510,11 @@ export function BrandsManager({ brands, onRefresh, toast }) {
           </tbody>
         </table>
       </div>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', maxWidth: 400 }}>
-        <div className="form-group" style={{ flex: 1 }}><label>New Brand Name</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. NewBrand" /></div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', maxWidth: 520 }}>
+        <div className="form-group" style={{ flex: 1 }}><label>Brand Name</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. NewBrand" /></div>
+        <div className="form-group" style={{ width: 80 }}><label>Abbr (3 letters)</label><input value={form.abbreviation} onChange={e => setForm(f => ({ ...f, abbreviation: e.target.value.toUpperCase().slice(0, 3) }))} placeholder="NBR" style={{ fontFamily: 'monospace' }} /></div>
         <div className="form-group"><label>Color</label><input type="color" value={form.color} onChange={e => setForm(f => ({ ...f, color: e.target.value }))} style={{ width: 44, height: 36, padding: 2, cursor: 'pointer' }} /></div>
-        <button className="btn btn-primary btn-sm" onClick={addBrand} disabled={saving || !form.name.trim()} style={{ marginBottom: 0 }}>{Icon.plus} Add Brand</button>
+        <button className="btn btn-primary btn-sm" onClick={addBrand} disabled={saving || !form.name.trim()} style={{ marginBottom: 0 }}>{Icon.plus} Add</button>
       </div>
     </div>
   );

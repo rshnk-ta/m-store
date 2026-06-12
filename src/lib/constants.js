@@ -1,5 +1,6 @@
 export const MARKETS = ['Nigeria', 'Ghana', 'International'];
 export const CATEGORIES = ['Apparel', 'Drinkware', 'Bags & Totes', 'Stationery', 'Office & Desk', 'Tech Accessories', 'Outdoor & Lifestyle'];
+export const CATEGORY_ABBR = { 'Apparel': 'AP', 'Drinkware': 'DW', 'Bags & Totes': 'BT', 'Stationery': 'ST', 'Office & Desk': 'OD', 'Tech Accessories': 'TA', 'Outdoor & Lifestyle': 'OL' };
 
 export const ORDER_STAGES = [
   { key: 'collecting',    label: 'Collecting Orders', short: 'Collecting' },
