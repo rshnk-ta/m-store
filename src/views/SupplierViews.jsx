@@ -106,15 +106,17 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
         const { data: variant } = await supabase.from('product_variants').insert({
           product_id: product.id, brand: v.brand, sku: v.sku, color: v.color,
         }).select().single();
-        // Upload each image for this variant
-        if (variant && v.imageFiles?.length > 0) {
-          for (let i = 0; i < v.imageFiles.length; i++) {
-            const url = await uploadImage(v.imageFiles[i], 'variants');
-            if (url) await supabase.from('variant_images').insert({ variant_id: variant.id, image_url: url, sort_order: i });
+        if (!variant) continue;
+
+        // Upload images only if present — image is optional
+        const files = v.imageFiles?.filter(f => f instanceof File) || [];
+        for (let i = 0; i < files.length; i++) {
+          const url = await uploadImage(files[i], 'variants');
+          if (url) {
+            await supabase.from('variant_images').insert({ variant_id: variant.id, image_url: url, sort_order: i });
+            // Set first as main image_url
+            if (i === 0) await supabase.from('product_variants').update({ image_url: url }).eq('id', variant.id);
           }
-          // Set first image as variant's main image_url for backwards compat
-          const firstUrl = await uploadImage(v.imageFiles[0], 'variants');
-          if (firstUrl) await supabase.from('product_variants').update({ image_url: firstUrl }).eq('id', variant.id);
         }
       }
 
@@ -168,26 +170,44 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
 
       {step === 2 && (
         <div className="card" style={{ padding: 24, maxWidth: 760 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 16 }}>Add one variant per brand. Each can have multiple images. MOQ <strong>{form.moq}</strong> is shared across all variants.</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 16 }}>
+            Add one variant per brand. Images are optional but recommended. MOQ <strong>{form.moq}</strong> shared across all variants.
+          </div>
           {variants.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 12, textAlign: 'center', padding: '12px 0' }}>No variants yet</div>}
-          {variants.map(v => (
-            <div className="variant-row" key={v.tempId} style={{ alignItems: 'center' }}>
+          {variants.map((v, idx) => (
+            <div key={v.tempId} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: v.color, display: 'inline-block', flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: 12 }}><strong>{v.brand}</strong> — {v.sku}</span>
-              <span style={{ fontSize: 10, color: v.imageFiles?.length > 0 ? 'var(--green)' : 'var(--text-muted)' }}>
-                {v.imageFiles?.length > 0 ? `✓ ${v.imageFiles.length} image${v.imageFiles.length !== 1 ? 's' : ''}` : 'No images'}
-              </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter(x => x.tempId !== v.tempId))} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
+              {/* Inline image upload for this variant */}
+              <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}>
+                <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
+                  const files = Array.from(e.target.files);
+                  setVariants(vs => vs.map((x, i) => i === idx ? { ...x, imageFiles: [...(x.imageFiles || []), ...files] } : x));
+                }} />
+                {v.imageFiles?.filter(f => f instanceof File).length > 0
+                  ? <span style={{ color: 'var(--green)' }}>✓ {v.imageFiles.filter(f => f instanceof File).length} image{v.imageFiles.filter(f => f instanceof File).length !== 1 ? 's' : ''} · Change</span>
+                  : <span style={{ color: 'var(--text-muted)', padding: '3px 8px', border: '1px dashed var(--border-strong)', borderRadius: 4 }}>{Icon.upload} Add image</span>
+                }
+              </label>
+              <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter((_, i) => i !== idx))} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
             </div>
           ))}
+
           <VariantForm brands={brands} category={form.category} existingVariants={variants} onAdd={(v) => setVariants(prev => [...prev, v])} />
+
           <div className="divider" />
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-ghost btn-sm" onClick={() => setStep(1)}>← Back</button>
             <button className="btn btn-primary btn-sm" onClick={submit} disabled={saving || variants.length === 0}>
               {saving ? 'Submitting…' : `Submit for Approval (${variants.length} variant${variants.length !== 1 ? 's' : ''})`}
             </button>
-            {saving && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Uploading images, please wait…</span>}
+            {saving && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Uploading, please wait…</span>}
+            <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => {
+              if (window.confirm('Reset the entire form?')) {
+                setForm({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', production_lead_days: 30, shipping_lead_days: 45 });
+                setVariants([]); setImageFile(null); setStep(1);
+              }
+            }}>Reset Form</button>
           </div>
         </div>
       )}
