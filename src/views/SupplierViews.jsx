@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { Modal, Icon, StageBadge, MultiImageUpload } from '../components/UI';
@@ -22,8 +22,19 @@ function generateSku(brandAbbr, categoryAbbr, existingVariants) {
 // ── VARIANT FORM ───────────────────────────────────────────────────────────
 function VariantForm({ brands, category, existingVariants = [], onAdd }) {
   const [vForm, setVForm] = useState({ brand: brands[0]?.name || '', sku: '', imageFiles: [] });
+  const [imagePreviews, setImagePreviews] = useState([]);
 
-  // Auto-generate SKU when brand changes
+  // Auto-generate SKU on mount
+  useEffect(() => {
+    if (brands[0] && category) {
+      const brand = brands[0];
+      const catAbbr = CATEGORY_ABBR[category] || 'XX';
+      const brandAbbr = brand.abbreviation || brand.name.slice(0, 3).toUpperCase();
+      const sku = generateSku(brandAbbr, catAbbr, existingVariants);
+      setVForm(f => ({ ...f, brand: brand.name, sku }));
+    }
+  }, []);
+
   const handleBrandChange = (brandName) => {
     const brand = brands.find(b => b.name === brandName);
     const catAbbr = CATEGORY_ABBR[category] || 'XX';
@@ -32,22 +43,36 @@ function VariantForm({ brands, category, existingVariants = [], onAdd }) {
     setVForm(f => ({ ...f, brand: brandName, sku }));
   };
 
-  // Auto-generate on mount
-  useState(() => {
-    if (brands[0] && category) handleBrandChange(brands[0].name);
-  });
+  const handleImages = (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    setVForm(f => ({ ...f, imageFiles: [...f.imageFiles, ...files] }));
+    setImagePreviews(p => [...p, ...files.map(f => URL.createObjectURL(f))]);
+  };
+
+  const removeImage = (i) => {
+    setVForm(f => ({ ...f, imageFiles: f.imageFiles.filter((_, idx) => idx !== i) }));
+    setImagePreviews(p => p.filter((_, idx) => idx !== i));
+  };
 
   const handleAdd = () => {
     if (!vForm.sku.trim() || !vForm.brand) return;
     const brand = brands.find(b => b.name === vForm.brand);
-    onAdd({ tempId: Math.random().toString(36).slice(2), brand: vForm.brand, sku: vForm.sku, color: brand?.color || '#000000', imageFiles: vForm.imageFiles });
-    // Auto-generate next SKU
+    onAdd({
+      tempId: Math.random().toString(36).slice(2),
+      brand: vForm.brand,
+      sku: vForm.sku,
+      color: brand?.color || '#000000',
+      imageFiles: vForm.imageFiles,
+    });
+    // Reset form and auto-generate next SKU for next variant
     const catAbbr = CATEGORY_ABBR[category] || 'XX';
-    const brandAbbr = brand?.abbreviation || vForm.brand.slice(0, 3).toUpperCase();
+    const allExisting = [...existingVariants, { sku: vForm.sku }];
     const nextBrand = brands.find(b => b.name !== vForm.brand) || brands[0];
-    const nextBrandAbbr = nextBrand?.abbreviation || nextBrand?.name.slice(0, 3).toUpperCase() || '';
-    const nextSku = generateSku(nextBrandAbbr, catAbbr, [...existingVariants, { sku: vForm.sku }]);
+    const nextAbbr = nextBrand?.abbreviation || nextBrand?.name.slice(0, 3).toUpperCase() || '';
+    const nextSku = generateSku(nextAbbr, catAbbr, allExisting);
     setVForm({ brand: nextBrand?.name || brands[0]?.name || '', sku: nextSku, imageFiles: [] });
+    setImagePreviews([]);
   };
 
   return (
@@ -70,8 +95,23 @@ function VariantForm({ brands, category, existingVariants = [], onAdd }) {
           />
         </div>
       </div>
-      <MultiImageUpload label="Variant Images (branded mockups)" onChange={(files) => setVForm(f => ({ ...f, imageFiles: files }))} />
-      <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={handleAdd} disabled={!vForm.sku.trim()}>{Icon.plus} Add Variant</button>
+      <div className="form-group full" style={{ marginBottom: 12 }}>
+        <label>Variant Images (optional)</label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {imagePreviews.map((src, i) => (
+            <div key={i} style={{ position: 'relative' }}>
+              <img src={src} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }} />
+              <button onClick={() => removeImage(i)} style={{ position: 'absolute', top: -4, right: -4, width: 16, height: 16, borderRadius: '50%', background: 'var(--red)', color: 'white', border: 'none', cursor: 'pointer', fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>✕</button>
+            </div>
+          ))}
+          <label style={{ width: 56, height: 56, border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius-md)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-muted)', gap: 2 }}>
+            <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={handleImages} />
+            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+            <span style={{ fontSize: 9 }}>Add</span>
+          </label>
+        </div>
+      </div>
+      <button className="btn btn-secondary btn-sm" onClick={handleAdd} disabled={!vForm.sku.trim()}>{Icon.plus} Add Variant</button>
     </div>
   );
 }
@@ -274,10 +314,14 @@ function SupplierEditModal({ product, brands, onClose, onSave, toast }) {
       for (const v of variants.filter(x => x.isExisting && x.toDelete)) await supabase.from('product_variants').delete().eq('id', v.id);
       for (const v of variants.filter(x => !x.isExisting)) {
         const { data: newV } = await supabase.from('product_variants').insert({ product_id: product.id, brand: v.brand, sku: v.sku, color: v.color }).select().single();
-        if (newV && v.imageFiles?.length > 0) {
-          for (let i = 0; i < v.imageFiles.length; i++) {
-            const url = await uploadImage(v.imageFiles[i], 'variants');
-            if (url) await supabase.from('variant_images').insert({ variant_id: newV.id, image_url: url, sort_order: i });
+        if (newV) {
+          const files = (v.imageFiles || []).filter(f => f instanceof File);
+          for (let i = 0; i < files.length; i++) {
+            const url = await uploadImage(files[i], 'variants');
+            if (url) {
+              await supabase.from('variant_images').insert({ variant_id: newV.id, image_url: url, sort_order: i });
+              if (i === 0) await supabase.from('product_variants').update({ image_url: url }).eq('id', newV.id);
+            }
           }
         }
       }
