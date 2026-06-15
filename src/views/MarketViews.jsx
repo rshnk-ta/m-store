@@ -6,18 +6,32 @@ import { MARKETS } from '../lib/constants';
 import { OrderDetailModal } from './AdminViews';
 import { notifyUsers } from '../lib/db';
 
-// ── MARKET CATALOG ─────────────────────────────────────────────────────────
 export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const { profile } = useAuth();
-  const [cart, setCart] = useState({}); // { [productId__variantId]: newQty } — additional qty to add
-  const [editingOrder, setEditingOrder] = useState(null); // { orderId, newQty }
+  const [editingOrder, setEditingOrder] = useState(null);
   const [sampleModal, setSampleModal] = useState(null);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [activeOnly, setActiveOnly] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false);
 
   const market = profile?.market;
+  const storageKey = `mstore_cart_${market}`;
+
+  // Persist cart to localStorage so it survives tab switches / page focus loss
+  const [cart, setCartRaw] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { return {}; }
+  });
+
+  const setCart = (updater) => {
+    setCartRaw(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
   const visibleProducts = products.filter(p => activeOnly ? p.status === 'active' : p.status === 'active' || p.status === 'draft');
   const cats = ['All', ...Array.from(new Set(visibleProducts.map(p => p.category)))];
   const filtered = visibleProducts.filter(p =>
@@ -25,7 +39,6 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     p.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Get existing pending (collecting) order for this market+variant
   const getPendingOrder = (productId, variantId) =>
     orders.find(o => o.product_id === productId && o.variant_id === variantId && o.market === market && o.type === 'standard' && o.status === 'collecting');
 
@@ -35,31 +48,29 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     setCart(c => qty > 0 ? { ...c, [key]: qty } : Object.fromEntries(Object.entries(c).filter(([k]) => k !== key)));
   };
 
-  const cartCount = Object.values(cart).filter(q => q > 0).length;
-  const cartTotal = Object.entries(cart).reduce((sum, [key, qty]) => {
-    const [productId] = key.split('__');
-    const p = products.find(x => x.id === productId);
-    return sum + (p ? p.unit_price * qty : 0);
-  }, 0);
+  // Enrich cart items for display
+  const cartItems = Object.entries(cart).filter(([, qty]) => qty > 0).map(([key, qty]) => {
+    const [productId, variantId] = key.split('__');
+    const product = products.find(x => x.id === productId);
+    const variant = product?.product_variants?.find(x => x.id === variantId);
+    return { key, productId, variantId, qty, product, variant };
+  });
+  const cartCount = cartItems.length;
+  const cartTotal = cartItems.reduce((sum, { qty, product }) => sum + (product ? product.unit_price * qty : 0), 0);
 
-  // Update qty of an existing pending order
   const updatePendingQty = async (orderId, newQty) => {
     if (newQty <= 0) {
       await supabase.from('orders').delete().eq('id', orderId);
       toast('Order removed', 'default');
     } else {
-      // Recalculate status
       const order = orders.find(o => o.id === orderId);
       const product = products.find(p => p.id === order?.product_id);
-      const otherQty = orders
-        .filter(o => o.product_id === order?.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId)
-        .reduce((s, o) => s + o.qty, 0);
-      const newTotal = otherQty + newQty;
-      const status = product && newTotal >= product.moq ? 'moq_reached' : 'collecting';
+      const otherQty = orders.filter(o => o.product_id === order?.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId).reduce((s, o) => s + o.qty, 0);
+      const status = product && (otherQty + newQty) >= product.moq ? 'moq_reached' : 'collecting';
       await supabase.from('orders').update({ qty: newQty, status, updated_at: new Date().toISOString() }).eq('id', orderId);
       if (status === 'moq_reached') {
         const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
-        if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product?.name}" has reached its MOQ.`, { product_id: order?.product_id, order_id: orderId });
+        if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product?.name}" has reached its MOQ.`, { product_id: order?.product_id });
       }
       toast('Order updated', 'success');
     }
@@ -71,24 +82,16 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     if (cartCount === 0) return;
     setSubmitting(true);
     try {
-      for (const [key, qty] of Object.entries(cart)) {
-        if (qty <= 0) continue;
-        const [productId, variantId] = key.split('__');
-        const product = products.find(x => x.id === productId);
+      for (const { productId, variantId, qty, product } of cartItems) {
         if (!product) continue;
-
-        // Check if there's already a pending order for this variant from this market
         const existing = getPendingOrder(productId, variantId);
         const currentQty = orders.filter(o => o.product_id === productId && o.type === 'standard' && o.status === 'collecting').reduce((s, o) => s + o.qty, 0);
-
         if (existing) {
-          // Add to existing pending order
           const newQty = existing.qty + qty;
           const newTotal = currentQty - existing.qty + newQty;
           const status = newTotal >= product.moq ? 'moq_reached' : 'collecting';
           await supabase.from('orders').update({ qty: newQty, status, updated_at: new Date().toISOString() }).eq('id', existing.id);
         } else {
-          // Create new order
           const newTotal = currentQty + qty;
           const status = newTotal >= product.moq ? 'moq_reached' : 'collecting';
           const { data: newOrder } = await supabase.from('orders').insert({
@@ -96,16 +99,18 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
             qty, type: 'standard', status,
             placed_by: profile?.id, placed_at: new Date().toISOString(),
           }).select().single();
-          if (newOrder) await supabase.from('timeline_log').insert({ order_id: newOrder.id, stage: 'collecting', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
-
-          if (status === 'moq_reached') {
-            const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
-            if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ.`, { product_id: productId, order_id: newOrder?.id });
+          if (newOrder) {
+            await supabase.from('timeline_log').insert({ order_id: newOrder.id, stage: 'collecting', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
+            if (status === 'moq_reached') {
+              const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+              if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ.`, { product_id: productId, order_id: newOrder.id });
+            }
           }
         }
       }
       toast(`${cartCount} order line${cartCount !== 1 ? 's' : ''} submitted`, 'success');
       setCart({});
+      setCartOpen(false);
       onRefresh();
     } catch (e) {
       toast('Error: ' + e.message, 'error');
@@ -114,7 +119,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   };
 
   return (
-    <div>
+    <div style={{ paddingBottom: cartCount > 0 ? 140 : 0 }}>
       <div className="section-header">
         <div><div className="section-title">Catalog</div><div className="section-desc">{market} · Browse and order</div></div>
       </div>
@@ -136,44 +141,26 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
                 const newQty = cart[key] || '';
                 const pendingOrder = getPendingOrder(p.id, v.id);
                 const isEditing = editingOrder?.orderId === pendingOrder?.id;
-
                 return (
                   <div key={v.id} style={{ marginBottom: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.color, flexShrink: 0 }} />
                       <span style={{ fontSize: 11, color: 'var(--text-secondary)', flex: 1 }}>{v.brand}</span>
-                      <input
-                        type="number" min="0" placeholder="0"
-                        value={newQty}
-                        onChange={e => setQty(p.id, v.id, parseInt(e.target.value) || 0)}
-                        style={{ width: 70, fontSize: 12, textAlign: 'center' }}
-                      />
+                      <input type="number" min="0" placeholder="0" value={newQty} onChange={e => setQty(p.id, v.id, parseInt(e.target.value) || 0)} style={{ width: 70, fontSize: 12, textAlign: 'center' }} />
                     </div>
-                    {/* Show existing pending order */}
                     {pendingOrder && (
                       <div style={{ marginLeft: 15, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--accent-warm)' }}>
                         {isEditing ? (
                           <>
                             <span>Pending:</span>
-                            <input
-                              type="number" min="0"
-                              value={editingOrder.newQty}
-                              onChange={e => setEditingOrder(eo => ({ ...eo, newQty: parseInt(e.target.value) || 0 }))}
-                              style={{ width: 60, fontSize: 11, textAlign: 'center', padding: '2px 6px' }}
-                              autoFocus
-                            />
+                            <input type="number" min="0" value={editingOrder.newQty} onChange={e => setEditingOrder(eo => ({ ...eo, newQty: parseInt(e.target.value) || 0 }))} style={{ width: 60, fontSize: 11, textAlign: 'center', padding: '2px 6px' }} autoFocus />
                             <button className="btn btn-sm btn-success" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => updatePendingQty(pendingOrder.id, editingOrder.newQty)}>Save</button>
                             <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => setEditingOrder(null)}>✕</button>
                           </>
                         ) : (
                           <>
-                            <span style={{ background: '#FFFBEB', padding: '1px 7px', borderRadius: 999, border: '1px solid #FDE68A' }}>
-                              {pendingOrder.qty} pending
-                            </span>
-                            <button className="btn btn-ghost btn-sm" style={{ padding: '1px 6px', fontSize: 10, color: 'var(--accent-warm)' }}
-                              onClick={() => setEditingOrder({ orderId: pendingOrder.id, newQty: pendingOrder.qty })}>
-                              Edit
-                            </button>
+                            <span style={{ background: '#FFFBEB', padding: '1px 7px', borderRadius: 999, border: '1px solid #FDE68A' }}>{pendingOrder.qty} pending</span>
+                            <button className="btn btn-ghost btn-sm" style={{ padding: '1px 6px', fontSize: 10, color: 'var(--accent-warm)' }} onClick={() => setEditingOrder({ orderId: pendingOrder.id, newQty: pendingOrder.qty })}>Edit</button>
                           </>
                         )}
                       </div>
@@ -188,15 +175,44 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
         {filtered.length === 0 && <div className="empty" style={{ gridColumn: '1/-1' }}><div className="empty-icon">◻</div><div className="empty-title">No items found</div></div>}
       </div>
 
+      {/* ── PERSISTENT CART BAR ── */}
       {cartCount > 0 && (
-        <div className="cart-bar">
-          <div className="cart-summary">
-            {Icon.cart} <strong>{cartCount}</strong> new line{cartCount !== 1 ? 's' : ''} · est. <strong>${cartTotal.toFixed(2)}</strong>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setCart({})}>Clear</button>
-            <button className="btn btn-primary btn-sm" onClick={submitCart} disabled={submitting}>
-              {submitting ? 'Submitting…' : `Submit ${cartCount} Order${cartCount !== 1 ? 's' : ''}`}
+        <div style={{ position: 'fixed', bottom: 0, left: 'var(--sidebar-w)', right: 0, background: 'var(--surface)', borderTop: '1px solid var(--border)', boxShadow: '0 -4px 20px rgba(26,23,20,0.08)', zIndex: 100 }}>
+          {/* Expandable item list */}
+          {cartOpen && (
+            <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--border)', maxHeight: 240, overflowY: 'auto' }}>
+              <div style={{ fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 10 }}>Order Summary</div>
+              {cartItems.map(({ key, qty, product, variant }) => (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                  {product?.image_url && <img src={product.image_url} alt="" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 'var(--radius)', flexShrink: 0 }} />}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500 }}>{product?.name || '—'}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: variant?.color, display: 'inline-block' }} />
+                      {variant?.brand} · {variant?.sku}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'right' }}>
+                    <div>{qty} units</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>${product ? (product.unit_price * qty).toFixed(2) : '—'}</div>
+                  </div>
+                  <button onClick={() => setQty(key.split('__')[0], key.split('__')[1], 0)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 14, padding: '0 4px', lineHeight: 1 }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Cart bar row */}
+          <div style={{ display: 'flex', alignItems: 'center', padding: '12px 24px', gap: 16 }}>
+            <button onClick={() => setCartOpen(o => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-primary)', fontFamily: 'var(--font-body)' }}>
+              <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--text-primary)', color: 'white', fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{cartCount}</span>
+              <span style={{ fontSize: 12, fontWeight: 500 }}>{cartOpen ? '▾ Hide order' : '▸ Review order'}</span>
+            </button>
+            <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
+              Est. total <strong style={{ color: 'var(--text-primary)' }}>${cartTotal.toFixed(2)}</strong>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setCart({}); setCartOpen(false); }}>Clear</button>
+            <button className="btn btn-primary" onClick={submitCart} disabled={submitting} style={{ minWidth: 140 }}>
+              {submitting ? 'Submitting…' : `Submit Order`}
             </button>
           </div>
         </div>
@@ -206,6 +222,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     </div>
   );
 }
+
 
 // ── SAMPLE REQUEST MODAL ───────────────────────────────────────────────────
 function SampleModal({ product, market, onClose, onRefresh, toast, profile }) {
