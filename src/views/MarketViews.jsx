@@ -59,21 +59,41 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const cartTotal = cartItems.reduce((sum, { qty, product }) => sum + (product ? product.unit_price * qty : 0), 0);
 
   const updatePendingQty = async (orderId, newQty) => {
+    const order = orders.find(o => o.id === orderId);
+    const product = products.find(p => p.id === order?.product_id);
+
+    if (!order || !product) return;
+
     if (newQty <= 0) {
+      if (!window.confirm('Remove this order line?')) return;
       await supabase.from('orders').delete().eq('id', orderId);
-      toast('Order removed', 'default');
-    } else {
-      const order = orders.find(o => o.id === orderId);
-      const product = products.find(p => p.id === order?.product_id);
-      const otherQty = orders.filter(o => o.product_id === order?.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId).reduce((s, o) => s + o.qty, 0);
-      const status = product && (otherQty + newQty) >= product.moq ? 'moq_reached' : 'collecting';
-      await supabase.from('orders').update({ qty: newQty, status, updated_at: new Date().toISOString() }).eq('id', orderId);
-      if (status === 'moq_reached') {
-        const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
-        if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product?.name}" has reached its MOQ.`, { product_id: order?.product_id });
-      }
-      toast('Order updated', 'success');
+      toast('Order line removed', 'default');
+      setEditingOrder(null);
+      onRefresh();
+      return;
     }
+
+    // Calculate total across ALL variants of this product (collecting only), excluding this order
+    const otherCollectingQty = orders
+      .filter(o => o.product_id === order.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId)
+      .reduce((s, o) => s + o.qty, 0);
+    const newTotal = otherCollectingQty + newQty;
+    const newStatus = newTotal >= product.moq ? 'moq_reached' : 'collecting';
+
+    // Update this order
+    await supabase.from('orders').update({ qty: newQty, status: newStatus, updated_at: new Date().toISOString() }).eq('id', orderId);
+
+    // If MOQ now reached, update ALL other collecting orders for same product to moq_reached too
+    if (newStatus === 'moq_reached') {
+      const otherCollecting = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId);
+      for (const o of otherCollecting) {
+        await supabase.from('orders').update({ status: 'moq_reached', updated_at: new Date().toISOString() }).eq('id', o.id);
+      }
+      const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+      if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ.`, { product_id: order.product_id });
+    }
+
+    toast('Order updated', 'success');
     setEditingOrder(null);
     onRefresh();
   };
@@ -102,6 +122,11 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
           if (newOrder) {
             await supabase.from('timeline_log').insert({ order_id: newOrder.id, stage: 'collecting', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
             if (status === 'moq_reached') {
+              // Update ALL other collecting orders for same product to moq_reached
+              const otherOrders = orders.filter(o => o.product_id === productId && o.type === 'standard' && o.status === 'collecting');
+              for (const o of otherOrders) {
+                await supabase.from('orders').update({ status: 'moq_reached', updated_at: new Date().toISOString() }).eq('id', o.id);
+              }
               const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
               if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ.`, { product_id: productId, order_id: newOrder.id });
             }
@@ -109,7 +134,9 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
         }
       }
       toast(`${cartCount} order line${cartCount !== 1 ? 's' : ''} submitted`, 'success');
-      setCart({});
+      // Explicitly clear both state and localStorage
+      localStorage.removeItem(storageKey);
+      setCartRaw({});
       setCartOpen(false);
       onRefresh();
     } catch (e) {
@@ -151,12 +178,27 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
                     {pendingOrder && (
                       <div style={{ marginLeft: 15, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--accent-warm)' }}>
                         {isEditing ? (
-                          <>
-                            <span>Pending:</span>
-                            <input type="number" min="0" value={editingOrder.newQty} onChange={e => setEditingOrder(eo => ({ ...eo, newQty: parseInt(e.target.value) || 0 }))} style={{ width: 60, fontSize: 11, textAlign: 'center', padding: '2px 6px' }} autoFocus />
-                            <button className="btn btn-sm btn-success" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => updatePendingQty(pendingOrder.id, editingOrder.newQty)}>Save</button>
-                            <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => setEditingOrder(null)}>✕</button>
-                          </>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Pending qty:</span>
+                            <input
+                              type="number" min="1"
+                              value={editingOrder.newQty === 0 ? '' : editingOrder.newQty}
+                              onChange={e => {
+                                const val = e.target.value === '' ? 0 : parseInt(e.target.value);
+                                setEditingOrder(eo => ({ ...eo, newQty: isNaN(val) ? 0 : val }));
+                              }}
+                              style={{ width: 70, fontSize: 11, textAlign: 'center', padding: '3px 6px' }}
+                              autoFocus
+                              onFocus={e => e.target.select()}
+                            />
+                            <button className="btn btn-sm btn-success" style={{ padding: '3px 10px', fontSize: 10 }}
+                              onClick={() => editingOrder.newQty > 0 && updatePendingQty(pendingOrder.id, editingOrder.newQty)}
+                              disabled={!editingOrder.newQty || editingOrder.newQty <= 0}>
+                              Save
+                            </button>
+                            <button className="btn btn-ghost btn-sm" style={{ padding: '3px 6px', fontSize: 10 }} onClick={() => setEditingOrder(null)}>Cancel</button>
+                            <button className="btn btn-danger btn-sm" style={{ padding: '3px 8px', fontSize: 10 }} onClick={() => updatePendingQty(pendingOrder.id, 0)}>Remove</button>
+                          </div>
                         ) : (
                           <>
                             <span style={{ background: '#FFFBEB', padding: '1px 7px', borderRadius: 999, border: '1px solid #FDE68A' }}>{pendingOrder.qty} pending</span>
@@ -210,7 +252,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
             <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
               Est. total <strong style={{ color: 'var(--text-primary)' }}>${cartTotal.toFixed(2)}</strong>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => { setCart({}); setCartOpen(false); }}>Clear</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => { localStorage.removeItem(storageKey); setCartRaw({}); setCartOpen(false); }}>Clear</button>
             <button className="btn btn-primary" onClick={submitCart} disabled={submitting} style={{ minWidth: 140 }}>
               {submitting ? 'Submitting…' : `Submit Order`}
             </button>
