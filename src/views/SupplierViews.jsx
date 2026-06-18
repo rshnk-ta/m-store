@@ -397,6 +397,7 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
     in_production: groupForStage(o => o.status === 'in_production'),
     dispatched: groupForStage(o => ['dispatched', 'in_transit'].includes(o.status)),
     delivered: groupForStage(o => ['arrived', 'delivered'].includes(o.status)),
+    cancelled: groupForStage(o => o.status === 'cancelled'),
   };
 
   const tabs = [
@@ -405,6 +406,7 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
     { key: 'in_production', label: 'In Production' },
     { key: 'dispatched', label: 'Dispatched' },
     { key: 'delivered', label: 'Done' },
+    { key: 'cancelled', label: 'Cancelled' },
   ];
 
   const visible = statusGroups[tab] || [];
@@ -450,6 +452,9 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
               <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 500 }}>{product?.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{grpOrders.length} market order{grpOrders.length !== 1 ? 's' : ''} · {totalQty} total units</div>
+                {tab === 'cancelled' && repOrder?.cancelled_reason && (
+                  <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 4 }}>{repOrder.cancelled_reason}</div>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 {tab === 'moq_reached' && <button className="btn btn-sm btn-success" onClick={() => setAcceptModal(grpOrders)}>{Icon.check} Accept All</button>}

@@ -453,17 +453,19 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
     }
 
     // Check if remaining total (across all markets, excluding cancelled) still meets MOQ
-    const otherOrders = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.id !== order.id && o.status !== 'cancelled');
+    // Only orders still in collecting/accepted are eligible for shortfall cancellation —
+    // orders already in production or beyond should not be retroactively cancelled
+    const otherOrders = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.id !== order.id && ['collecting', 'accepted'].includes(o.status));
     const remainingTotal = otherOrders.reduce((s, o) => s + o.qty, 0) + (reduceQtyTo > 0 ? reduceQtyTo : 0);
 
     let shortfallMsg = '';
     if (product && remainingTotal < product.moq) {
-      // MOQ shortfall — cancel the whole accepted batch, notify everyone involved
-      const allRelated = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.status !== 'cancelled' && o.id !== order.id);
+      // MOQ shortfall — cancel the whole collecting/accepted batch, notify everyone involved
+      const allRelated = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.id !== order.id && ['collecting', 'accepted'].includes(o.status));
       for (const o of allRelated) {
         await supabase.from('orders').update({ status: 'cancelled', cancelled_reason: `MOQ shortfall after ${market} backed out (remaining ${remainingTotal} < MOQ ${product.moq})`, updated_at: new Date().toISOString() }).eq('id', o.id);
       }
-      shortfallMsg = ` This caused the order to fall below MOQ (${remainingTotal}/${product.moq}) — the full order has been cancelled.`;
+      shortfallMsg = ` This caused the order to fall below MOQ (${remainingTotal}/${product.moq}) — the order has been cancelled.`;
 
       // Notify all affected markets + supplier
       const affectedUserIds = [...new Set(allRelated.map(o => o.placed_by).filter(Boolean))];
