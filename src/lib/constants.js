@@ -31,6 +31,7 @@ export const STAGE_COLORS = {
   arrived:       { bg: '#ECFDF5', text: '#065F46' },
   delivered:     { bg: '#ECFDF5', text: '#065F46' },
   pending_approval: { bg: '#FFFBEB', text: '#92400E' },
+  cancelled: { bg: '#FEF2F2', text: '#991B1B' },
   cancelled_moq_not_met: { bg: '#FEF2F2', text: '#991B1B' },
 };
 

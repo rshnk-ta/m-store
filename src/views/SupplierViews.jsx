@@ -376,21 +376,27 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
   const [selected, setSelected] = useState(null);
   const [acceptModal, setAcceptModal] = useState(null);
 
-  // Group standard orders by product — show products where moq_reached or have collecting orders
+  // Group ALL standard orders by product (regardless of status) so accepted/in_production/etc orders stay visible
   const productGroups = {};
-  orders.filter(o => o.type === 'standard' && o.status === 'collecting').forEach(o => {
+  orders.filter(o => o.type === 'standard').forEach(o => {
     const p = products.find(x => x.id === o.product_id);
     const v = p?.product_variants?.find(x => x.id === o.variant_id);
     if (!productGroups[o.product_id]) productGroups[o.product_id] = { product: p, orders: [] };
     productGroups[o.product_id].orders.push({ ...o, product: p, variant: v });
   });
 
+  // For each tab, filter to product groups whose RELEVANT orders are in that stage.
+  // We show only the orders matching that stage within the group (not all historical orders).
+  const groupForStage = (statusMatch) => Object.values(productGroups)
+    .map(g => ({ product: g.product, orders: g.orders.filter(statusMatch) }))
+    .filter(g => g.orders.length > 0);
+
   const statusGroups = {
-    moq_reached: Object.values(productGroups).filter(g => g.product?.moq_reached),
-    accepted: Object.values(productGroups).filter(g => g.orders.some(o => o.status === 'accepted')),
-    in_production: Object.values(productGroups).filter(g => g.orders.some(o => o.status === 'in_production')),
-    dispatched: Object.values(productGroups).filter(g => g.orders.some(o => o.status === 'dispatched')),
-    delivered: Object.values(productGroups).filter(g => g.orders.some(o => ['arrived','delivered'].includes(o.status))),
+    moq_reached: groupForStage(o => o.status === 'collecting').filter(g => g.product?.moq_reached),
+    accepted: groupForStage(o => o.status === 'accepted'),
+    in_production: groupForStage(o => o.status === 'in_production'),
+    dispatched: groupForStage(o => ['dispatched', 'in_transit'].includes(o.status)),
+    delivered: groupForStage(o => ['arrived', 'delivered'].includes(o.status)),
   };
 
   const tabs = [
@@ -404,12 +410,13 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
   const visible = statusGroups[tab] || [];
 
   const advanceAllOrders = async (productId, status) => {
-    const productOrders = orders.filter(o => o.product_id === productId && o.type === 'standard');
+    // Only advance orders currently in the stage that precedes this one
+    const precedingStatus = { in_production: 'accepted', dispatched: 'in_production' }[status];
+    const productOrders = orders.filter(o => o.product_id === productId && o.type === 'standard' && o.status === precedingStatus);
     for (const o of productOrders) {
       await supabase.from('orders').update({ status, updated_at: new Date().toISOString() }).eq('id', o.id);
       await supabase.from('timeline_log').insert({ order_id: o.id, stage: status, actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
     }
-    // Notify market managers
     const placedByIds = [...new Set(productOrders.map(o => o.placed_by).filter(Boolean))];
     const product = products.find(x => x.id === productId);
     if (placedByIds.length) {

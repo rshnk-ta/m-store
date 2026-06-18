@@ -30,19 +30,46 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { return {}; }
   });
 
-  // When orders load, sync cart with any existing pending orders
-  // (so qty inputs always show current committed qty)
+  // Sync cart with current order state:
+  // - Pre-populate qty for any collecting order not yet in cart
+  // - Remove cart entries whose order is no longer collecting (e.g. just got accepted)
   useEffect(() => {
-    if (!market || !orders.length) return;
+    if (!market) return;
     const pendingOrders = orders.filter(o => o.market === market && o.type === 'standard' && o.status === 'collecting');
-    if (!pendingOrders.length) return;
+    const pendingKeys = new Set(pendingOrders.map(o => `${o.product_id}__${o.variant_id}`));
+
     setCartRaw(prev => {
+      let changed = false;
       const next = { ...prev };
+
+      // Add/sync collecting orders not yet in cart
       pendingOrders.forEach(o => {
         const key = `${o.product_id}__${o.variant_id}`;
-        // Only pre-populate if not already set in cart (don't override user's in-progress changes)
-        if (!(key in next)) next[key] = o.qty;
+        if (!(key in next)) { next[key] = o.qty; changed = true; }
       });
+
+      // Remove cart entries for orders that are no longer collecting
+      // (accepted, dispatched, delivered, or deleted) — these are no longer editable
+      Object.keys(next).forEach(key => {
+        if (!pendingKeys.has(key)) {
+          // Check if there's any non-collecting order for this exact product+variant+market
+          const [productId, variantId] = key.split('__');
+          const hasNonCollectingOrder = orders.some(o =>
+            o.product_id === productId && o.variant_id === variantId && o.market === market &&
+            o.type === 'standard' && o.status !== 'collecting'
+          );
+          const hasNoOrderAtAll = !orders.some(o =>
+            o.product_id === productId && o.variant_id === variantId && o.market === market && o.type === 'standard'
+          );
+          // Only auto-clear if it matches a real accepted/etc order (not a brand-new unsaved cart entry)
+          if (hasNonCollectingOrder) {
+            delete next[key];
+            changed = true;
+          }
+        }
+      });
+
+      if (!changed) return prev;
       try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
       return next;
     });
@@ -372,9 +399,20 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
   const { profile } = useAuth();
   const [selected, setSelected] = useState(null);
   const [tab, setTab] = useState('standard');
+  const [rejectModal, setRejectModal] = useState(null);
+  const [processing, setProcessing] = useState(null);
 
   const market = profile?.market;
   const myOrders = orders.filter(o => o.market === market && o.type === tab).map(o => ({
+    ...o,
+    product: products.find(x => x.id === o.product_id),
+    variant: products.find(x => x.id === o.product_id)?.product_variants?.find(v => v.id === o.variant_id),
+  }));
+
+  // Orders needing this market's cost approval
+  const costApprovalOrders = orders.filter(o =>
+    o.market === market && o.type === 'standard' && o.cost_approval_status === 'pending'
+  ).map(o => ({
     ...o,
     product: products.find(x => x.id === o.product_id),
     variant: products.find(x => x.id === o.product_id)?.product_variants?.find(v => v.id === o.variant_id),
@@ -389,18 +427,94 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
     onRefresh();
   };
 
-  const groupedByProduct = myOrders.reduce((acc, o) => {
-    const key = o.product_id;
-    if (!acc[key]) acc[key] = { product: o.product, orders: [] };
-    acc[key].orders.push(o);
-    return acc;
-  }, {});
+  const approveCost = async (order) => {
+    setProcessing(order.id);
+    await supabase.from('orders').update({ cost_approval_status: 'approved', updated_at: new Date().toISOString() }).eq('id', order.id);
+    // Notify supplier
+    const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+    if (supplierUsers?.length) {
+      await notifyUsers(supplierUsers.map(u => u.id), 'cost_approved', 'Cost Approved', `${market} approved the cost for "${order.product?.name}" at $${order.unit_cost}/unit.`, { product_id: order.product_id, order_id: order.id });
+    }
+    toast('Cost approved', 'success');
+    setProcessing(null);
+    onRefresh();
+  };
+
+  const rejectCost = async (order, reduceQtyTo) => {
+    setProcessing(order.id);
+    const product = order.product;
+
+    if (reduceQtyTo <= 0) {
+      // Full backout — cancel this market's order entirely
+      await supabase.from('orders').update({ status: 'cancelled', cost_approval_status: 'rejected', cancelled_reason: 'Market rejected cost increase', updated_at: new Date().toISOString() }).eq('id', order.id);
+    } else {
+      // Partial backout — reduce quantity
+      await supabase.from('orders').update({ qty: reduceQtyTo, cost_approval_status: 'rejected', updated_at: new Date().toISOString() }).eq('id', order.id);
+    }
+
+    // Check if remaining total (across all markets, excluding cancelled) still meets MOQ
+    const otherOrders = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.id !== order.id && o.status !== 'cancelled');
+    const remainingTotal = otherOrders.reduce((s, o) => s + o.qty, 0) + (reduceQtyTo > 0 ? reduceQtyTo : 0);
+
+    let shortfallMsg = '';
+    if (product && remainingTotal < product.moq) {
+      // MOQ shortfall — cancel the whole accepted batch, notify everyone involved
+      const allRelated = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.status !== 'cancelled' && o.id !== order.id);
+      for (const o of allRelated) {
+        await supabase.from('orders').update({ status: 'cancelled', cancelled_reason: `MOQ shortfall after ${market} backed out (remaining ${remainingTotal} < MOQ ${product.moq})`, updated_at: new Date().toISOString() }).eq('id', o.id);
+      }
+      shortfallMsg = ` This caused the order to fall below MOQ (${remainingTotal}/${product.moq}) — the full order has been cancelled.`;
+
+      // Notify all affected markets + supplier
+      const affectedUserIds = [...new Set(allRelated.map(o => o.placed_by).filter(Boolean))];
+      const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+      const allIds = [...affectedUserIds, ...(supplierUsers?.map(u => u.id) || [])];
+      await notifyUsers(allIds, 'moq_shortfall_cancelled', 'Order Cancelled — MOQ Shortfall', `"${product.name}" order cancelled: ${market} backed out and remaining quantity (${remainingTotal}) fell below MOQ (${product.moq}).`, { product_id: order.product_id });
+    } else {
+      // Just notify supplier of the partial reduction
+      const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+      if (supplierUsers?.length) {
+        await notifyUsers(supplierUsers.map(u => u.id), 'cost_rejected', 'Cost Rejected', `${market} rejected the cost increase for "${product?.name}".${reduceQtyTo > 0 ? ` Quantity reduced to ${reduceQtyTo}.` : ' Order fully cancelled by this market.'}`, { product_id: order.product_id, order_id: order.id });
+      }
+    }
+
+    toast(`Cost rejected.${shortfallMsg}`, shortfallMsg ? 'error' : 'default');
+    setProcessing(null);
+    setRejectModal(null);
+    onRefresh();
+  };
 
   return (
     <div>
       <div className="section-header">
         <div><div className="section-title">My Orders</div><div className="section-desc">{market}</div></div>
       </div>
+
+      {/* Cost approval banner */}
+      {costApprovalOrders.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent-warm)', marginBottom: 10, fontWeight: 500 }}>
+            ⚠ {costApprovalOrders.length} cost approval{costApprovalOrders.length !== 1 ? 's' : ''} required
+          </div>
+          {costApprovalOrders.map(o => (
+            <div key={o.id} style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 'var(--radius-md)', padding: '14px 18px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 14 }}>
+              {o.product?.image_url && <img src={o.product.image_url} alt="" style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 'var(--radius)', flexShrink: 0 }} />}
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 500, fontSize: 13 }}>{o.product?.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  Catalog price <strong>${o.product?.unit_price}</strong> → Confirmed cost <strong style={{ color: 'var(--red)' }}>${o.unit_cost}</strong> ({o.qty} units · ${(o.unit_cost * o.qty).toFixed(2)} total)
+                </div>
+                {o.payment_terms && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>Terms: {o.payment_terms}</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button className="btn btn-sm btn-success" disabled={processing === o.id} onClick={() => approveCost(o)}>{Icon.check} Approve</button>
+                <button className="btn btn-sm btn-danger" disabled={processing === o.id} onClick={() => setRejectModal(o)}>Reject</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="tabs">
         <div className={`tab${tab === 'standard' ? ' active' : ''}`} onClick={() => setTab('standard')}>Orders</div>
         <div className={`tab${tab === 'sample' ? ' active' : ''}`} onClick={() => setTab('sample')}>Samples</div>
@@ -419,7 +533,10 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
                   <td>{o.qty}</td>
                   <td style={{ color: 'var(--text-secondary)' }}>{o.unit_cost ? `$${o.unit_cost}` : '—'}</td>
                   <td style={{ color: 'var(--text-secondary)' }}>{o.unit_cost ? `$${(o.unit_cost * o.qty).toFixed(2)}` : '—'}</td>
-                  <td><StageBadge status={o.status} type={o.type} /></td>
+                  <td>
+                    <StageBadge status={o.status} type={o.type} />
+                    {o.cost_approval_status === 'pending' && <span className="badge badge-amber" style={{ marginLeft: 6 }}>Cost approval needed</span>}
+                  </td>
                   <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{shipment?.eta || '—'}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
@@ -436,7 +553,41 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
       {selected && (
         <OrderDetailModal order={selected} product={selected.product} shipments={shipments.filter(s => s.order_id === selected.id)} onClose={() => setSelected(null)} onRefresh={onRefresh} toast={toast} readOnly />
       )}
+      {rejectModal && (
+        <RejectCostModal order={rejectModal} onClose={() => setRejectModal(null)} onConfirm={(qty) => rejectCost(rejectModal, qty)} processing={processing === rejectModal.id} />
+      )}
     </div>
+  );
+}
+
+// ── REJECT COST MODAL ──────────────────────────────────────────────────────
+function RejectCostModal({ order, onClose, onConfirm, processing }) {
+  const [choice, setChoice] = useState('full'); // 'full' = back out entirely, 'reduce' = lower qty
+
+  return (
+    <Modal title="Reject Cost Increase" subtitle={order.product?.name} onClose={onClose}
+      footer={<><button className="btn btn-secondary btn-sm" onClick={onClose}>Cancel</button><button className="btn btn-danger btn-sm" disabled={processing} onClick={() => onConfirm(choice === 'full' ? 0 : order.qty)}>{processing ? 'Processing…' : 'Confirm'}</button></>}
+    >
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 16 }}>
+        The confirmed cost (${order.unit_cost}/unit) is higher than the catalog price (${order.product?.unit_price}). You can back out of this order entirely, or keep it as is and flag your concern without reducing quantity.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', padding: 12, border: `1px solid ${choice === 'full' ? 'var(--text-primary)' : 'var(--border)'}`, borderRadius: 'var(--radius-md)' }}>
+          <input type="radio" checked={choice === 'full'} onChange={() => setChoice('full')} style={{ width: 'auto', marginTop: 2 }} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500 }}>Back out entirely</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Cancel your {order.qty}-unit order for this item. If this drops the total below MOQ, the whole batch will be cancelled and all parties notified.</div>
+          </div>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', padding: 12, border: `1px solid ${choice === 'reduce' ? 'var(--text-primary)' : 'var(--border)'}`, borderRadius: 'var(--radius-md)' }}>
+          <input type="radio" checked={choice === 'reduce'} onChange={() => setChoice('reduce')} style={{ width: 'auto', marginTop: 2 }} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500 }}>Keep order, flag rejection</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Keep the {order.qty} units but record that you did not approve this cost. The supplier will be notified of your objection.</div>
+          </div>
+        </label>
+      </div>
+    </Modal>
   );
 }
 // ── SUPPLIER CATALOG (read-only reference view) ────────────────────────────
