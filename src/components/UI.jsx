@@ -155,12 +155,12 @@ export function ProductCard({ p, orders = [], children, showStatus }) {
 
   const displayImages = getImages(activeVariant);
 
-  // MOQ bar: only count collecting (pending, not yet accepted) orders
+  // MOQ bar: count collecting orders only; use product.moq_reached flag too
   const collectingQty = orders
     .filter(o => o.product_id === p.id && o.type === 'standard' && o.status === 'collecting')
     .reduce((s, o) => s + o.qty, 0);
   const moqPct = Math.min(100, Math.round((collectingQty / p.moq) * 100));
-  const moqReached = moqPct >= 100;
+  const moqReached = p.moq_reached || moqPct >= 100;
   const moqClose = moqPct >= 70 && !moqReached;
 
   return (
@@ -210,7 +210,7 @@ export function ProductCard({ p, orders = [], children, showStatus }) {
             <div className="moq-track">
               <div className={`moq-fill${moqReached ? ' reached' : moqClose ? ' close' : ''}`} style={{ width: `${moqPct}%` }} />
             </div>
-            {moqReached && <div style={{ fontSize: 10, color: 'var(--green)', marginTop: 4, fontWeight: 500 }}>✓ MOQ reached — awaiting supplier acceptance</div>}
+            {moqReached && <div style={{ fontSize: 10, color: 'var(--green)', marginTop: 4, fontWeight: 500 }}>✓ MOQ reached — ready for supplier acceptance</div>}
           </div>
           {p.product_variants?.filter(v => v.is_active !== false).length > 0 && (
             <>

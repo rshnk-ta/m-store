@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { Modal, Icon, ProductCard, StageBadge } from '../components/UI';
@@ -6,9 +6,14 @@ import { MARKETS } from '../lib/constants';
 import { OrderDetailModal } from './AdminViews';
 import { notifyUsers } from '../lib/db';
 
+// ── MARKET CATALOG ─────────────────────────────────────────────────────────
+// Cart model: { [productId__variantId]: desiredQty }
+// desiredQty = what the market wants total (not a delta)
+// On submit: if existing order → update qty; if no order → insert
+// Cart shows each line with: previously submitted qty, new desired qty, and delta
+
 export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const { profile } = useAuth();
-  const [editingOrder, setEditingOrder] = useState(null);
   const [sampleModal, setSampleModal] = useState(null);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
@@ -17,12 +22,31 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const [cartOpen, setCartOpen] = useState(false);
 
   const market = profile?.market;
-  const storageKey = `mstore_cart_${market}`;
+  const storageKey = `mstore_v2_${market}`;
 
-  // Persist cart to localStorage so it survives tab switches / page focus loss
+  // Cart stores DESIRED total qty per variant (not delta)
+  // Pre-populate from existing pending orders on mount
   const [cart, setCartRaw] = useState(() => {
     try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { return {}; }
   });
+
+  // When orders load, sync cart with any existing pending orders
+  // (so qty inputs always show current committed qty)
+  useEffect(() => {
+    if (!market || !orders.length) return;
+    const pendingOrders = orders.filter(o => o.market === market && o.type === 'standard' && o.status === 'collecting');
+    if (!pendingOrders.length) return;
+    setCartRaw(prev => {
+      const next = { ...prev };
+      pendingOrders.forEach(o => {
+        const key = `${o.product_id}__${o.variant_id}`;
+        // Only pre-populate if not already set in cart (don't override user's in-progress changes)
+        if (!(key in next)) next[key] = o.qty;
+      });
+      try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [orders, market]);
 
   const setCart = (updater) => {
     setCartRaw(prev => {
@@ -30,6 +54,12 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
       try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
       return next;
     });
+  };
+
+  const clearCart = () => {
+    localStorage.removeItem(storageKey);
+    setCartRaw({});
+    setCartOpen(false);
   };
 
   const visibleProducts = products.filter(p => activeOnly ? p.status === 'active' : p.status === 'active' || p.status === 'draft');
@@ -43,101 +73,80 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     orders.find(o => o.product_id === productId && o.variant_id === variantId && o.market === market && o.type === 'standard' && o.status === 'collecting');
 
   const cartKey = (productId, variantId) => `${productId}__${variantId}`;
+
   const setQty = (productId, variantId, qty) => {
     const key = cartKey(productId, variantId);
     setCart(c => qty > 0 ? { ...c, [key]: qty } : Object.fromEntries(Object.entries(c).filter(([k]) => k !== key)));
   };
 
-  // Enrich cart items for display
-  const cartItems = Object.entries(cart).filter(([, qty]) => qty > 0).map(([key, qty]) => {
-    const [productId, variantId] = key.split('__');
-    const product = products.find(x => x.id === productId);
-    const variant = product?.product_variants?.find(x => x.id === variantId);
-    return { key, productId, variantId, qty, product, variant };
-  });
-  const cartCount = cartItems.length;
-  const cartTotal = cartItems.reduce((sum, { qty, product }) => sum + (product ? product.unit_price * qty : 0), 0);
+  // Build cart summary: lines where desired qty differs from committed qty
+  const cartLines = Object.entries(cart)
+    .map(([key, desiredQty]) => {
+      const [productId, variantId] = key.split('__');
+      const product = products.find(x => x.id === productId);
+      const variant = product?.product_variants?.find(x => x.id === variantId);
+      const pendingOrder = getPendingOrder(productId, variantId);
+      const committedQty = pendingOrder?.qty || 0;
+      const delta = desiredQty - committedQty;
+      return { key, productId, variantId, desiredQty, committedQty, delta, product, variant, pendingOrder };
+    })
+    .filter(line => line.delta !== 0 || line.desiredQty > 0); // show all lines with qty or changes
 
-  const updatePendingQty = async (orderId, newQty) => {
-    const order = orders.find(o => o.id === orderId);
-    const product = products.find(p => p.id === order?.product_id);
+  // Only lines with actual changes need submitting
+  const changedLines = cartLines.filter(l => l.delta !== 0);
+  const hasChanges = changedLines.length > 0;
 
-    if (!order || !product) return;
-
-    if (newQty <= 0) {
-      if (!window.confirm('Remove this order line?')) return;
-      await supabase.from('orders').delete().eq('id', orderId);
-      toast('Order line removed', 'default');
-      setEditingOrder(null);
-      onRefresh();
-      return;
-    }
-
-    // Calculate total across ALL variants of this product (collecting only), excluding this order
-    const otherCollectingQty = orders
-      .filter(o => o.product_id === order.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId)
-      .reduce((s, o) => s + o.qty, 0);
-    const newTotal = otherCollectingQty + newQty;
-    const newStatus = newTotal >= product.moq ? 'moq_reached' : 'collecting';
-
-    // Update this order
-    await supabase.from('orders').update({ qty: newQty, status: newStatus, updated_at: new Date().toISOString() }).eq('id', orderId);
-
-    // If MOQ now reached, update ALL other collecting orders for same product to moq_reached too
-    if (newStatus === 'moq_reached') {
-      const otherCollecting = orders.filter(o => o.product_id === order.product_id && o.type === 'standard' && o.status === 'collecting' && o.id !== orderId);
-      for (const o of otherCollecting) {
-        await supabase.from('orders').update({ status: 'moq_reached', updated_at: new Date().toISOString() }).eq('id', o.id);
-      }
-      const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
-      if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ.`, { product_id: order.product_id });
-    }
-
-    toast('Order updated', 'success');
-    setEditingOrder(null);
-    onRefresh();
-  };
+  const cartTotal = cartLines.reduce((sum, { desiredQty, product }) =>
+    sum + (product ? product.unit_price * desiredQty : 0), 0);
+  const cartDelta = changedLines.reduce((sum, { delta, product }) =>
+    sum + (product ? product.unit_price * Math.abs(delta) : 0), 0);
 
   const submitCart = async () => {
-    if (cartCount === 0) return;
+    if (!hasChanges) return;
     setSubmitting(true);
     try {
-      for (const { productId, variantId, qty, product } of cartItems) {
-        if (!product) continue;
-        const existing = getPendingOrder(productId, variantId);
-        const currentQty = orders.filter(o => o.product_id === productId && o.type === 'standard' && o.status === 'collecting').reduce((s, o) => s + o.qty, 0);
-        if (existing) {
-          const newQty = existing.qty + qty;
-          const newTotal = currentQty - existing.qty + newQty;
-          const status = newTotal >= product.moq ? 'moq_reached' : 'collecting';
-          await supabase.from('orders').update({ qty: newQty, status, updated_at: new Date().toISOString() }).eq('id', existing.id);
+      for (const { productId, variantId, desiredQty, committedQty, pendingOrder, product } of changedLines) {
+        if (desiredQty <= 0 && pendingOrder) {
+          // Remove order
+          await supabase.from('orders').delete().eq('id', pendingOrder.id);
+        } else if (pendingOrder) {
+          // Update existing order qty
+          await supabase.from('orders').update({ qty: desiredQty, updated_at: new Date().toISOString() }).eq('id', pendingOrder.id);
         } else {
-          const newTotal = currentQty + qty;
-          const status = newTotal >= product.moq ? 'moq_reached' : 'collecting';
+          // Create new order
           const { data: newOrder } = await supabase.from('orders').insert({
             product_id: productId, variant_id: variantId, market,
-            qty, type: 'standard', status,
+            qty: desiredQty, type: 'standard', status: 'collecting',
             placed_by: profile?.id, placed_at: new Date().toISOString(),
           }).select().single();
           if (newOrder) {
             await supabase.from('timeline_log').insert({ order_id: newOrder.id, stage: 'collecting', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
-            if (status === 'moq_reached') {
-              // Update ALL other collecting orders for same product to moq_reached
-              const otherOrders = orders.filter(o => o.product_id === productId && o.type === 'standard' && o.status === 'collecting');
-              for (const o of otherOrders) {
-                await supabase.from('orders').update({ status: 'moq_reached', updated_at: new Date().toISOString() }).eq('id', o.id);
-              }
-              const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
-              if (supplierUsers?.length) await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ.`, { product_id: productId, order_id: newOrder.id });
+          }
+        }
+
+        // Check if product MOQ is now reached (after this change)
+        if (product && desiredQty > 0) {
+          const allProductOrders = orders
+            .filter(o => o.product_id === productId && o.type === 'standard' && o.status === 'collecting' && !(pendingOrder && o.id === pendingOrder.id))
+            .reduce((s, o) => s + o.qty, 0) + (pendingOrder ? desiredQty : desiredQty);
+
+          const wasReached = product.moq_reached;
+          const nowReached = allProductOrders >= product.moq;
+
+          if (nowReached && !wasReached) {
+            await supabase.from('products').update({ moq_reached: true, moq_reached_at: new Date().toISOString() }).eq('id', productId);
+            const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+            if (supplierUsers?.length) {
+              await notifyUsers(supplierUsers.map(u => u.id), 'moq_reached', 'MOQ Reached', `"${product.name}" has reached its MOQ of ${product.moq} units.`, { product_id: productId });
             }
+          } else if (!nowReached && wasReached) {
+            // MOQ dropped below threshold (order reduced)
+            await supabase.from('products').update({ moq_reached: false, moq_reached_at: null }).eq('id', productId);
           }
         }
       }
-      toast(`${cartCount} order line${cartCount !== 1 ? 's' : ''} submitted`, 'success');
-      // Explicitly clear both state and localStorage
-      localStorage.removeItem(storageKey);
-      setCartRaw({});
-      setCartOpen(false);
+      toast(`Order updated — ${changedLines.length} line${changedLines.length !== 1 ? 's' : ''} saved`, 'success');
+      clearCart();
       onRefresh();
     } catch (e) {
       toast('Error: ' + e.message, 'error');
@@ -146,7 +155,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   };
 
   return (
-    <div style={{ paddingBottom: cartCount > 0 ? 140 : 0 }}>
+    <div style={{ paddingBottom: hasChanges ? 140 : 0 }}>
       <div className="section-header">
         <div><div className="section-title">Catalog</div><div className="section-desc">{market} · Browse and order</div></div>
       </div>
@@ -158,103 +167,138 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
           Active items only
         </label>
       </div>
+
       <div className="card-grid">
-        {filtered.map(p => (
-          <ProductCard key={p.id} p={p} orders={orders.filter(o => o.type === 'standard')}>
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 }}>Order quantities</div>
-              {p.product_variants?.filter(v => v.is_active !== false).map(v => {
-                const key = cartKey(p.id, v.id);
-                const newQty = cart[key] || '';
-                const pendingOrder = getPendingOrder(p.id, v.id);
-                const isEditing = editingOrder?.orderId === pendingOrder?.id;
-                return (
-                  <div key={v.id} style={{ marginBottom: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.color, flexShrink: 0 }} />
-                      <span style={{ fontSize: 11, color: 'var(--text-secondary)', flex: 1 }}>{v.brand}</span>
-                      <input type="number" min="0" placeholder="0" value={newQty} onChange={e => setQty(p.id, v.id, parseInt(e.target.value) || 0)} style={{ width: 70, fontSize: 12, textAlign: 'center' }} />
-                    </div>
-                    {pendingOrder && (
-                      <div style={{ marginLeft: 15, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--accent-warm)' }}>
-                        {isEditing ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Pending qty:</span>
-                            <input
-                              type="number" min="1"
-                              value={editingOrder.newQty === 0 ? '' : editingOrder.newQty}
-                              onChange={e => {
-                                const val = e.target.value === '' ? 0 : parseInt(e.target.value);
-                                setEditingOrder(eo => ({ ...eo, newQty: isNaN(val) ? 0 : val }));
-                              }}
-                              style={{ width: 70, fontSize: 11, textAlign: 'center', padding: '3px 6px' }}
-                              autoFocus
-                              onFocus={e => e.target.select()}
-                            />
-                            <button className="btn btn-sm btn-success" style={{ padding: '3px 10px', fontSize: 10 }}
-                              onClick={() => editingOrder.newQty > 0 && updatePendingQty(pendingOrder.id, editingOrder.newQty)}
-                              disabled={!editingOrder.newQty || editingOrder.newQty <= 0}>
-                              Save
-                            </button>
-                            <button className="btn btn-ghost btn-sm" style={{ padding: '3px 6px', fontSize: 10 }} onClick={() => setEditingOrder(null)}>Cancel</button>
-                            <button className="btn btn-danger btn-sm" style={{ padding: '3px 8px', fontSize: 10 }} onClick={() => updatePendingQty(pendingOrder.id, 0)}>Remove</button>
-                          </div>
-                        ) : (
-                          <>
-                            <span style={{ background: '#FFFBEB', padding: '1px 7px', borderRadius: 999, border: '1px solid #FDE68A' }}>{pendingOrder.qty} pending</span>
-                            <button className="btn btn-ghost btn-sm" style={{ padding: '1px 6px', fontSize: 10, color: 'var(--accent-warm)' }} onClick={() => setEditingOrder({ orderId: pendingOrder.id, newQty: pendingOrder.qty })}>Edit</button>
-                          </>
-                        )}
+        {filtered.map(p => {
+          // Total collecting qty across all markets for MOQ bar
+          const totalCollecting = orders
+            .filter(o => o.product_id === p.id && o.type === 'standard' && o.status === 'collecting')
+            .reduce((s, o) => s + o.qty, 0);
+          const moqPct = Math.min(100, Math.round((totalCollecting / p.moq) * 100));
+          const moqReached = p.moq_reached || moqPct >= 100;
+
+          return (
+            <ProductCard key={p.id} p={p} orders={orders.filter(o => o.type === 'standard')}>
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 }}>
+                  Order quantities
+                  {moqReached && <span className="badge badge-green" style={{ marginLeft: 8, verticalAlign: 'middle' }}>MOQ reached</span>}
+                </div>
+                {p.product_variants?.filter(v => v.is_active !== false).map(v => {
+                  const key = cartKey(p.id, v.id);
+                  const desiredQty = cart[key] ?? (getPendingOrder(p.id, v.id)?.qty || 0);
+                  const committedQty = getPendingOrder(p.id, v.id)?.qty || 0;
+                  const delta = desiredQty - committedQty;
+
+                  return (
+                    <div key={v.id} style={{ marginBottom: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.color, flexShrink: 0 }} />
+                        <span style={{ fontSize: 11, color: 'var(--text-secondary)', flex: 1 }}>{v.brand}</span>
+                        <input
+                          type="number" min="0" placeholder="0"
+                          value={desiredQty || ''}
+                          onChange={e => {
+                            const val = parseInt(e.target.value) || 0;
+                            setQty(p.id, v.id, val);
+                            if (val > 0 || committedQty > 0) setCartOpen(true);
+                          }}
+                          onFocus={e => e.target.select()}
+                          style={{ width: 72, fontSize: 12, textAlign: 'center', borderColor: delta !== 0 ? 'var(--accent-warm)' : undefined }}
+                        />
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-              <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setSampleModal(p)}>{Icon.sample} Request Sample</button>
-            </div>
-          </ProductCard>
-        ))}
+                      {/* Show delta if changed */}
+                      {delta !== 0 && (
+                        <div style={{ marginLeft: 15, marginTop: 3, fontSize: 10 }}>
+                          <span style={{ color: delta > 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>
+                            {delta > 0 ? `+${delta}` : delta} from submitted
+                          </span>
+                          {committedQty > 0 && <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>(was {committedQty})</span>}
+                        </div>
+                      )}
+                      {/* Show committed qty if no change */}
+                      {delta === 0 && committedQty > 0 && (
+                        <div style={{ marginLeft: 15, marginTop: 3, fontSize: 10, color: 'var(--text-muted)' }}>
+                          {committedQty} submitted
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setSampleModal(p)}>{Icon.sample} Request Sample</button>
+              </div>
+            </ProductCard>
+          );
+        })}
         {filtered.length === 0 && <div className="empty" style={{ gridColumn: '1/-1' }}><div className="empty-icon">◻</div><div className="empty-title">No items found</div></div>}
       </div>
 
-      {/* ── PERSISTENT CART BAR ── */}
-      {cartCount > 0 && (
-        <div style={{ position: 'fixed', bottom: 0, left: 'var(--sidebar-w)', right: 0, background: 'var(--surface)', borderTop: '1px solid var(--border)', boxShadow: '0 -4px 20px rgba(26,23,20,0.08)', zIndex: 100 }}>
-          {/* Expandable item list */}
+      {/* ── ORDER SUMMARY BAR ── */}
+      {(hasChanges || cartLines.some(l => l.committedQty > 0)) && (
+        <div style={{ position: 'fixed', bottom: 0, left: 'var(--sidebar-w)', right: 0, background: 'var(--surface)', borderTop: '2px solid var(--border)', boxShadow: '0 -4px 20px rgba(26,23,20,0.08)', zIndex: 100 }}>
+
+          {/* Expandable order summary */}
           {cartOpen && (
-            <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--border)', maxHeight: 240, overflowY: 'auto' }}>
-              <div style={{ fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 10 }}>Order Summary</div>
-              {cartItems.map(({ key, qty, product, variant }) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                  {product?.image_url && <img src={product.image_url} alt="" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 'var(--radius)', flexShrink: 0 }} />}
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, fontWeight: 500 }}>{product?.name || '—'}</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', maxHeight: 260, overflowY: 'auto' }}>
+              <div style={{ fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 12 }}>Order Summary — {market}</div>
+              {cartLines.map(({ key, desiredQty, committedQty, delta, product, variant }) => (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                  {product?.image_url && <img src={product.image_url} alt="" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 'var(--radius)', flexShrink: 0 }} />}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500 }}>{product?.name}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, marginTop: 1 }}>
                       <span style={{ width: 6, height: 6, borderRadius: '50%', background: variant?.color, display: 'inline-block' }} />
                       {variant?.brand} · {variant?.sku}
                     </div>
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'right' }}>
-                    <div>{qty} units</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>${product ? (product.unit_price * qty).toFixed(2) : '—'}</div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{desiredQty} units</div>
+                    {delta !== 0 && (
+                      <div style={{ fontSize: 10, color: delta > 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>
+                        {delta > 0 ? `+${delta}` : delta} units
+                      </div>
+                    )}
+                    {delta === 0 && committedQty > 0 && (
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>no change</div>
+                    )}
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      ${product ? (product.unit_price * desiredQty).toFixed(2) : '—'}
+                    </div>
                   </div>
-                  <button onClick={() => setQty(key.split('__')[0], key.split('__')[1], 0)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 14, padding: '0 4px', lineHeight: 1 }}>✕</button>
+                  <button onClick={() => setQty(key.split('__')[0], key.split('__')[1], committedQty)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 14, padding: '0 4px', lineHeight: 1, flexShrink: 0 }} title="Revert change">↺</button>
                 </div>
               ))}
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 10, fontSize: 12 }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Total order value</span>
+                <strong>${cartTotal.toFixed(2)}</strong>
+              </div>
             </div>
           )}
-          {/* Cart bar row */}
+
+          {/* Bottom bar */}
           <div style={{ display: 'flex', alignItems: 'center', padding: '12px 24px', gap: 16 }}>
-            <button onClick={() => setCartOpen(o => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-primary)', fontFamily: 'var(--font-body)' }}>
-              <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--text-primary)', color: 'white', fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{cartCount}</span>
-              <span style={{ fontSize: 12, fontWeight: 500 }}>{cartOpen ? '▾ Hide order' : '▸ Review order'}</span>
+            <button onClick={() => setCartOpen(o => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-primary)', fontFamily: 'var(--font-body)', padding: 0 }}>
+              {hasChanges && (
+                <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--accent-warm)', color: 'white', fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  {changedLines.length}
+                </span>
+              )}
+              <span style={{ fontSize: 12, fontWeight: 500 }}>{cartOpen ? '▾ Hide summary' : '▸ Review order'}</span>
             </button>
             <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
-              Est. total <strong style={{ color: 'var(--text-primary)' }}>${cartTotal.toFixed(2)}</strong>
+              {hasChanges
+                ? <><span style={{ color: delta > 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>{changedLines.reduce((s, l) => s + l.delta, 0) > 0 ? '+' : ''}{changedLines.reduce((s, l) => s + l.delta, 0)} units</span> · Total <strong style={{ color: 'var(--text-primary)' }}>${cartTotal.toFixed(2)}</strong></>
+                : <>Total <strong>${cartTotal.toFixed(2)}</strong></>
+              }
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => { localStorage.removeItem(storageKey); setCartRaw({}); setCartOpen(false); }}>Clear</button>
-            <button className="btn btn-primary" onClick={submitCart} disabled={submitting} style={{ minWidth: 140 }}>
-              {submitting ? 'Submitting…' : `Submit Order`}
+            {hasChanges && <button className="btn btn-ghost btn-sm" onClick={() => {
+              // Revert all changes back to committed qty
+              const reverted = {};
+              cartLines.forEach(l => { if (l.committedQty > 0) reverted[l.key] = l.committedQty; });
+              setCart(reverted);
+            }}>Revert</button>}
+            <button className="btn btn-primary" onClick={submitCart} disabled={submitting || !hasChanges} style={{ minWidth: 140 }}>
+              {submitting ? 'Saving…' : hasChanges ? `Save Order` : 'No changes'}
             </button>
           </div>
         </div>
@@ -264,7 +308,6 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
     </div>
   );
 }
-
 
 // ── SAMPLE REQUEST MODAL ───────────────────────────────────────────────────
 function SampleModal({ product, market, onClose, onRefresh, toast, profile }) {

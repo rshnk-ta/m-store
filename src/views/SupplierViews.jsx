@@ -376,9 +376,9 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
   const [selected, setSelected] = useState(null);
   const [acceptModal, setAcceptModal] = useState(null);
 
-  // Group standard orders by product to show consolidated view per item
+  // Group standard orders by product — show products where moq_reached or have collecting orders
   const productGroups = {};
-  orders.filter(o => o.type === 'standard').forEach(o => {
+  orders.filter(o => o.type === 'standard' && o.status === 'collecting').forEach(o => {
     const p = products.find(x => x.id === o.product_id);
     const v = p?.product_variants?.find(x => x.id === o.variant_id);
     if (!productGroups[o.product_id]) productGroups[o.product_id] = { product: p, orders: [] };
@@ -386,7 +386,7 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
   });
 
   const statusGroups = {
-    moq_reached: Object.values(productGroups).filter(g => g.orders.some(o => o.status === 'moq_reached')),
+    moq_reached: Object.values(productGroups).filter(g => g.product?.moq_reached),
     accepted: Object.values(productGroups).filter(g => g.orders.some(o => o.status === 'accepted')),
     in_production: Object.values(productGroups).filter(g => g.orders.some(o => o.status === 'in_production')),
     dispatched: Object.values(productGroups).filter(g => g.orders.some(o => o.status === 'dispatched')),
@@ -491,9 +491,11 @@ function AcceptModal({ orders, products, onClose, onRefresh, toast, profile }) {
     const catalogPrice = product?.unit_price || 0;
     const needsCostApproval = catalogPrice > 0 && unitCost > catalogPrice * 1.05;
 
-    for (const o of orders) {
+    // Accept ALL collecting orders for this product across all markets
+    const allCollecting = orders.filter(o => o.product_id === product?.id && o.type === 'standard' && o.status === 'collecting');
+    for (const o of allCollecting) {
       await supabase.from('orders').update({
-        status: needsCostApproval ? 'accepted' : 'accepted',
+        status: 'accepted',
         unit_cost: unitCost,
         payment_terms: form.payment_terms,
         estimated_completion: form.estimated_completion || null,
@@ -506,10 +508,13 @@ function AcceptModal({ orders, products, onClose, onRefresh, toast, profile }) {
       await supabase.from('timeline_log').insert({ order_id: o.id, stage: 'accepted', planned_date: form.estimated_completion || null, actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
     }
 
-    // Notify all market managers who placed orders
-    const placedByIds = [...new Set(orders.map(o => o.placed_by).filter(Boolean))];
+    // Reset product moq_reached flag — order is now accepted
+    await supabase.from('products').update({ moq_reached: false }).eq('id', product?.id);
+
+    // Notify all market managers
+    const placedByIds = [...new Set(allCollecting.map(o => o.placed_by).filter(Boolean))];
     const msg = needsCostApproval
-      ? `Your order for "${product?.name}" has been accepted at $${unitCost}/unit. Note: this is more than 5% above the catalog price ($${catalogPrice}) — your approval is required.`
+      ? `Your order for "${product?.name}" has been accepted at $${unitCost}/unit. Note: this is >5% above catalog price — your approval is required.`
       : `Your order for "${product?.name}" has been accepted at $${unitCost}/unit. Est. completion: ${form.estimated_completion || 'TBD'}.`;
     await notifyUsers(placedByIds, needsCostApproval ? 'cost_approval_required' : 'order_accepted', needsCostApproval ? 'Cost Approval Required' : 'Order Accepted', msg, { product_id: product?.id });
 
