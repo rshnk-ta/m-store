@@ -287,7 +287,16 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
             </button>
             <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
               {hasChanges
-                ? <><span style={{ color: delta > 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>{changedLines.reduce((s, l) => s + l.delta, 0) > 0 ? '+' : ''}{changedLines.reduce((s, l) => s + l.delta, 0)} units</span> · Total <strong style={{ color: 'var(--text-primary)' }}>${cartTotal.toFixed(2)}</strong></>
+                ? (() => {
+                    const totalDelta = changedLines.reduce((s, l) => s + l.delta, 0);
+                    return (
+                      <>
+                        <span style={{ color: totalDelta > 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>
+                          {totalDelta > 0 ? '+' : ''}{totalDelta} units
+                        </span> · Total <strong style={{ color: 'var(--text-primary)' }}>${cartTotal.toFixed(2)}</strong>
+                      </>
+                    );
+                  })()
                 : <>Total <strong>${cartTotal.toFixed(2)}</strong></>
               }
             </div>
