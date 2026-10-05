@@ -401,6 +401,7 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
   const [tab, setTab] = useState('standard');
   const [rejectModal, setRejectModal] = useState(null);
   const [processing, setProcessing] = useState(null);
+  const [sampleProcessing, setSampleProcessing] = useState(null);
 
   const market = profile?.market;
   const myOrders = orders.filter(o => o.market === market && o.type === tab).map(o => ({
@@ -417,6 +418,34 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
     product: products.find(x => x.id === o.product_id),
     variant: products.find(x => x.id === o.product_id)?.product_variants?.find(v => v.id === o.variant_id),
   }));
+
+  const approveSample = async (order) => {
+    setSampleProcessing(order.id);
+    await supabase.from('orders').update({ status: 'accepted', updated_at: new Date().toISOString() }).eq('id', order.id);
+    await supabase.from('timeline_log').insert({ order_id: order.id, stage: 'accepted', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
+    // Notify supplier
+    const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+    if (supplierUsers?.length) {
+      await notifyUsers(supplierUsers.map(u => u.id), 'sample_accepted', 'Sample Approved', `${market} approved the sample of "${order.product?.name}". Please dispatch when ready.`, { order_id: order.id, product_id: order.product_id });
+    }
+    toast('Sample approved — supplier notified', 'success');
+    setSampleProcessing(null);
+    onRefresh();
+  };
+
+  const rejectSample = async (order) => {
+    setSampleProcessing(order.id);
+    await supabase.from('orders').update({ status: 'cancelled', cancelled_reason: 'Market rejected sample', updated_at: new Date().toISOString() }).eq('id', order.id);
+    await supabase.from('timeline_log').insert({ order_id: order.id, stage: 'cancelled', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
+    // Notify supplier
+    const { data: supplierUsers } = await supabase.from('users').select('id').eq('role', 'supplier');
+    if (supplierUsers?.length) {
+      await notifyUsers(supplierUsers.map(u => u.id), 'sample_rejected', 'Sample Rejected', `${market} rejected the sample of "${order.product?.name}".`, { order_id: order.id, product_id: order.product_id });
+    }
+    toast('Sample rejected', 'default');
+    setSampleProcessing(null);
+    onRefresh();
+  };
 
   const confirmDelivery = async (order) => {
     await supabase.from('orders').update({ status: 'delivered', updated_at: new Date().toISOString() }).eq('id', order.id);
@@ -519,15 +548,50 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
 
       <div className="tabs">
         <div className={`tab${tab === 'standard' ? ' active' : ''}`} onClick={() => setTab('standard')}>Orders</div>
-        <div className={`tab${tab === 'sample' ? ' active' : ''}`} onClick={() => setTab('sample')}>Samples</div>
+        <div className={`tab${tab === 'sample' ? ' active' : ''}`} onClick={() => setTab('sample')}>
+          Samples
+          {orders.filter(o => o.market === market && o.type === 'sample' && o.status === 'pending_approval').length > 0 && (
+            <span className="badge badge-amber" style={{ marginLeft: 6, padding: '1px 6px' }}>
+              {orders.filter(o => o.market === market && o.type === 'sample' && o.status === 'pending_approval').length}
+            </span>
+          )}
+        </div>
       </div>
       {myOrders.length === 0 && <div className="empty"><div className="empty-icon">○</div><div className="empty-title">No orders yet</div><div className="empty-desc">Browse the catalog to place orders</div></div>}
       <div className="card table-wrap">
         <table>
-          <thead><tr><th>Product</th><th>Brand</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Status</th><th>ETA</th><th></th></tr></thead>
+          {tab === 'standard'
+            ? <thead><tr><th>Product</th><th>Brand</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Status</th><th>ETA</th><th></th></tr></thead>
+            : <thead><tr><th>Product</th><th>Brand</th><th>Qty</th><th>Sample Cost</th><th>ETA</th><th>Status</th><th></th></tr></thead>
+          }
           <tbody>
             {myOrders.map(o => {
               const shipment = shipments.find(s => s.order_id === o.id && s.destination === market);
+              if (tab === 'sample') {
+                return (
+                  <tr key={o.id}>
+                    <td style={{ fontWeight: 500 }}>{o.product?.name}</td>
+                    <td>{o.variant && <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: o.variant.color, display: 'inline-block' }} />{o.variant.brand}</span>}</td>
+                    <td>{o.qty}</td>
+                    <td style={{ color: 'var(--text-secondary)' }}>{o.sample_cost ? `$${o.sample_cost}` : '—'}</td>
+                    <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{o.sample_eta || '—'}</td>
+                    <td><StageBadge status={o.status} type="sample" /></td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        {o.status === 'pending_approval' && (
+                          <>
+                            <button className="btn btn-sm btn-success" disabled={sampleProcessing === o.id} onClick={() => approveSample(o)}>{Icon.check} Approve</button>
+                            <button className="btn btn-sm btn-danger" disabled={sampleProcessing === o.id} onClick={() => rejectSample(o)}>Reject</button>
+                          </>
+                        )}
+                        {o.status === 'dispatched' && <span className="badge badge-blue">In transit</span>}
+                        {o.status === 'delivered' && <span className="badge badge-green">Received</span>}
+                        <button className="btn btn-ghost btn-sm" onClick={() => setSelected(o)}>{Icon.eye}</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }
               return (
                 <tr key={o.id}>
                   <td style={{ fontWeight: 500 }}>{o.product?.name}</td>

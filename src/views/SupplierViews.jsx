@@ -349,9 +349,17 @@ function SupplierEditModal({ product, brands, onClose, onSave, toast }) {
       <div className="divider" />
       <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Variants</div>
       {variants.filter(v => v.isExisting).map(v => (
-        <div className="variant-row" key={v.id} style={{ opacity: v.toDelete ? 0.4 : 1 }}>
+        <div className="variant-row" key={v.id} style={{ opacity: v.toDelete ? 0.4 : 1, alignItems: 'center' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color, display: 'inline-block' }} />
           <span style={{ flex: 1, fontSize: 12 }}><strong>{v.brand}</strong> — {v.sku}</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, marginRight: 8 }}>
+            <input type="checkbox" checked={v.is_active !== false} onChange={async (e) => {
+              await supabase.from('product_variants').update({ is_active: e.target.checked }).eq('id', v.id);
+              setVariants(vs => vs.map(x => x.id === v.id ? { ...x, is_active: e.target.checked } : x));
+              toast(`Variant ${e.target.checked ? 'activated' : 'deactivated'}`, 'success');
+            }} />
+            {v.is_active !== false ? 'Active' : 'Inactive'}
+          </label>
           <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.map(x => x.id === v.id ? { ...x, toDelete: !x.toDelete } : x))} style={{ color: v.toDelete ? 'var(--green)' : 'var(--red)', fontSize: 10, padding: '4px 8px' }}>
             {v.toDelete ? 'Undo' : 'Remove'}
           </button>
@@ -616,6 +624,7 @@ export function SupplierConsolidated({ products, orders, onRefresh, toast }) {
 export function SupplierSamples({ products, orders, onRefresh, toast }) {
   const { profile } = useAuth();
   const [detailModal, setDetailModal] = useState(null);
+  const [dispatching, setDispatching] = useState(null);
   const samples = orders.filter(o => o.type === 'sample').map(o => ({
     ...o,
     product: products.find(x => x.id === o.product_id),
@@ -624,6 +633,25 @@ export function SupplierSamples({ products, orders, onRefresh, toast }) {
 
   const acknowledge = async (order) => {
     setDetailModal(order);
+  };
+
+  const markDispatched = async (order) => {
+    setDispatching(order.id);
+    await supabase.from('orders').update({ status: 'dispatched', updated_at: new Date().toISOString() }).eq('id', order.id);
+    await supabase.from('timeline_log').insert({ order_id: order.id, stage: 'dispatched', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
+    // Notify market manager who placed the sample request
+    if (order.placed_by) {
+      await supabase.from('notifications').insert({
+        user_id: order.placed_by,
+        type: 'sample_dispatched',
+        title: 'Sample Dispatched',
+        message: `Your sample of "${order.product?.name}" has been dispatched and is on its way.`,
+        order_id: order.id,
+      });
+    }
+    toast('Sample marked as dispatched', 'success');
+    setDispatching(null);
+    onRefresh();
   };
 
   return (
@@ -646,7 +674,7 @@ export function SupplierSamples({ products, orders, onRefresh, toast }) {
                 <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{o.placed_at?.slice(0, 10)}</td>
                 <td>
                   {o.status === 'collecting' && <button className="btn btn-sm btn-secondary" onClick={() => acknowledge(o)}>Acknowledge →</button>}
-                  {o.status === 'accepted' && <button className="btn btn-sm btn-secondary" onClick={() => setDetailModal(o)}>Update</button>}
+                  {o.status === 'accepted' && <button className="btn btn-sm btn-primary" disabled={dispatching === o.id} onClick={() => markDispatched(o)}>{dispatching === o.id ? 'Dispatching…' : '↑ Mark Dispatched'}</button>}
                   {o.status === 'pending_approval' && <span className="badge badge-amber">Awaiting market approval</span>}
                   {o.status === 'dispatched' && <button className="btn btn-sm btn-secondary" onClick={async () => {
                     await supabase.from('orders').update({ status: 'delivered', updated_at: new Date().toISOString() }).eq('id', o.id);
