@@ -119,7 +119,7 @@ function VariantForm({ brands, category, existingVariants = [], onAdd }) {
 // ── SUBMIT NEW ITEM ────────────────────────────────────────────────────────
 export function SupplierSubmitItem({ brands, onRefresh, toast }) {
   const { profile } = useAuth();
-  const [form, setForm] = useState({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', production_lead_days: 30, shipping_lead_days: 45 });
+  const [form, setForm] = useState({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', production_lead_days: 30, carton_l: '', carton_w: '', carton_h: '', units_per_carton: '', gross_weight_kg: '', product_l: '', product_w: '', product_h: '' });
   const [variants, setVariants] = useState([]);
   const [imageFile, setImageFile] = useState(null);
   const [saving, setSaving] = useState(false);
