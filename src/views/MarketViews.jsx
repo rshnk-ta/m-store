@@ -3,8 +3,118 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { Modal, Icon, ProductCard, StageBadge } from '../components/UI';
 import { MARKETS } from '../lib/constants';
-import { OrderDetailModal } from './AdminViews';
+import { OrderDetailModal, ProductDetailModal } from './AdminViews';
 import { notifyUsers } from '../lib/db';
+
+// ── RE-APPROVAL BANNER ─────────────────────────────────────────────────────
+// Shown when a supplier has changed a catalogue item affecting one of this
+// market's collecting orders. The market manager must confirm or decline.
+function ReApprovalBanner({ orders, onRefresh, toast }) {
+  const { profile } = useAuth();
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [responding, setResponding] = useState(null);
+
+  useEffect(() => {
+    const myCollectingIds = orders
+      .filter(o => o.status === 'collecting' && o.type === 'standard')
+      .map(o => o.id);
+    if (!myCollectingIds.length) { setLoading(false); return; }
+
+    supabase
+      .from('order_reapproval')
+      .select('*, product_change_log(*, products(name, image_url, unit_price))')
+      .in('order_id', myCollectingIds)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .then(({ data }) => {
+        const enriched = (data || []).map(row => ({
+          ...row,
+          order: orders.find(o => o.id === row.order_id),
+        }));
+        setItems(enriched);
+        setLoading(false);
+      });
+  }, [orders]);
+
+  const respond = async (reapprovalId, decision) => {
+    setResponding(reapprovalId);
+    try {
+      await supabase
+        .from('order_reapproval')
+        .update({ status: decision, responded_by: profile?.id, responded_at: new Date().toISOString() })
+        .eq('id', reapprovalId);
+      toast(
+        decision === 'approved'
+          ? 'Order confirmed under new terms'
+          : 'Re-approval declined — you may cancel the order from My Orders',
+        decision === 'approved' ? 'success' : 'default'
+      );
+      setItems(prev => prev.filter(x => x.id !== reapprovalId));
+      onRefresh();
+    } catch (e) { toast('Error: ' + e.message, 'error'); }
+    setResponding(null);
+  };
+
+  if (loading || items.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{ padding: '12px 16px', background: '#FEF3C7', border: '1px solid #FCD34D', borderRadius: 'var(--radius-md)', marginBottom: 8 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, color: '#92400E' }}>
+          ⚠️ Action Required — Supplier Updated Catalogue Items
+        </div>
+        <div style={{ fontSize: 11, color: '#92400E', marginTop: 2 }}>
+          {items.length} of your collecting order{items.length !== 1 ? 's' : ''} {items.length !== 1 ? 'have been' : 'has been'} affected. Review and confirm whether you want to continue.
+        </div>
+      </div>
+      {items.map(item => {
+        const log = item.product_change_log;
+        const product = log?.products;
+        const order = item.order;
+        const oldVals = log?.old_values || {};
+        const newVals = log?.new_values || {};
+        const changedFields = Object.keys(newVals).filter(k => String(oldVals[k]) !== String(newVals[k]));
+        return (
+          <div key={item.id} style={{ background: 'var(--surface)', border: '1px solid #FCD34D', borderRadius: 'var(--radius-md)', padding: 16, marginBottom: 10, display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+            {product?.image_url && <img src={product.image_url} alt="" style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 'var(--radius)', flexShrink: 0 }} onError={e => e.target.style.display = 'none'} />}
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 4 }}>
+                {log?.change_type === 'deactivate'
+                  ? `"${product?.name}" has been deactivated by the supplier`
+                  : `"${product?.name}" has been updated`}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                Your order: <strong>{order?.qty} units</strong> · status <em>collecting</em>
+              </div>
+              {changedFields.length > 0 && log?.change_type === 'edit' && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                  {changedFields.map(k => (
+                    <span key={k} style={{ fontSize: 10, padding: '2px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 3 }}>
+                      <strong>{k}</strong>: {String(oldVals[k] ?? '—')} → {String(newVals[k] ?? '—')}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {log?.note && <div style={{ fontSize: 11, fontStyle: 'italic', color: 'var(--text-muted)', marginBottom: 4 }}>Supplier note: {log.note}</div>}
+              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                Changed {new Date(log?.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+              <button className="btn btn-success btn-sm" disabled={responding === item.id} onClick={() => respond(item.id, 'approved')}>
+                ✓ Continue Order
+              </button>
+              <button className="btn btn-danger btn-sm" disabled={responding === item.id} onClick={() => respond(item.id, 'declined')}>
+                ✕ Decline
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ── MARKET CATALOG ─────────────────────────────────────────────────────────
 // Cart model: { [productId__variantId]: desiredQty }
@@ -15,6 +125,7 @@ import { notifyUsers } from '../lib/db';
 export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const { profile } = useAuth();
   const [sampleModal, setSampleModal] = useState(null);
+  const [detailModal, setDetailModal] = useState(null);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [activeOnly, setActiveOnly] = useState(true);
@@ -128,6 +239,19 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
   const cartDelta = changedLines.reduce((sum, { delta, product }) =>
     sum + (product ? product.unit_price * Math.abs(delta) : 0), 0);
 
+  // CBM & carton calculations per cart line
+  const withCartons = cartLines.map(line => {
+    const p = line.product;
+    const upc = p?.units_per_carton;
+    const cartonCount = upc && line.desiredQty > 0 ? Math.ceil(line.desiredQty / upc) : null;
+    const cbm = (p?.carton_l && p?.carton_w && p?.carton_h && cartonCount)
+      ? (p.carton_l / 100) * (p.carton_w / 100) * (p.carton_h / 100) * cartonCount
+      : null;
+    return { ...line, cartonCount, cbm };
+  });
+  const totalCbm = withCartons.reduce((s, l) => s + (l.cbm || 0), 0);
+  const totalCartons = withCartons.reduce((s, l) => s + (l.cartonCount || 0), 0);
+
   const submitCart = async () => {
     if (!hasChanges) return;
     setSubmitting(true);
@@ -183,6 +307,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
 
   return (
     <div style={{ paddingBottom: hasChanges ? 140 : 0 }}>
+      <ReApprovalBanner orders={orders} onRefresh={onRefresh} toast={toast} />
       <div className="section-header">
         <div><div className="section-title">Catalog</div><div className="section-desc">{market} · Browse and order</div></div>
       </div>
@@ -205,7 +330,14 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
           const moqReached = p.moq_reached || moqPct >= 100;
 
           return (
-            <ProductCard key={p.id} p={p} orders={orders.filter(o => o.type === 'standard')}>
+            <div key={p.id} style={{ position: 'relative' }}>
+              {/* Invisible click layer — covers the card header/image area only */}
+              <div
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 180, cursor: 'pointer', zIndex: 1 }}
+                onClick={() => setDetailModal(p)}
+                title="View full details"
+              />
+            <ProductCard p={p} orders={orders.filter(o => o.type === 'standard')}>
               <div style={{ marginTop: 14 }}>
                 <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 }}>
                   Order quantities
@@ -255,6 +387,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
                 <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setSampleModal(p)}>{Icon.sample} Request Sample</button>
               </div>
             </ProductCard>
+            </div>
           );
         })}
         {filtered.length === 0 && <div className="empty" style={{ gridColumn: '1/-1' }}><div className="empty-icon">◻</div><div className="empty-title">No items found</div></div>}
@@ -268,7 +401,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
           {cartOpen && (
             <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', maxHeight: 260, overflowY: 'auto' }}>
               <div style={{ fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 12 }}>Order Summary — {market}</div>
-              {cartLines.map(({ key, desiredQty, committedQty, delta, product, variant }) => (
+              {withCartons.map(({ key, desiredQty, committedQty, delta, product, variant, cartonCount, cbm }) => (
                 <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
                   {product?.image_url && <img src={product.image_url} alt="" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 'var(--radius)', flexShrink: 0 }} />}
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -277,6 +410,11 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
                       <span style={{ width: 6, height: 6, borderRadius: '50%', background: variant?.color, display: 'inline-block' }} />
                       {variant?.brand} · {variant?.sku}
                     </div>
+                    {cartonCount && (
+                      <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 2 }}>
+                        {cartonCount} carton{cartonCount !== 1 ? 's' : ''}{cbm ? ` · ${cbm.toFixed(3)} CBM` : ''}
+                      </div>
+                    )}
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{desiredQty} units</div>
@@ -295,8 +433,15 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
                   <button onClick={() => setQty(key.split('__')[0], key.split('__')[1], committedQty)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 14, padding: '0 4px', lineHeight: 1, flexShrink: 0 }} title="Revert change">↺</button>
                 </div>
               ))}
-              <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 10, fontSize: 12 }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Total order value</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingTop: 10, fontSize: 12 }}>
+                <div>
+                  <span style={{ color: 'var(--text-secondary)' }}>Total order value</span>
+                  {totalCartons > 0 && (
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                      {totalCartons} carton{totalCartons !== 1 ? 's' : ''}{totalCbm > 0 ? ` · ${totalCbm.toFixed(3)} CBM total` : ''}
+                    </div>
+                  )}
+                </div>
                 <strong>${cartTotal.toFixed(2)}</strong>
               </div>
             </div>
@@ -341,6 +486,7 @@ export function MarketCatalog({ products, orders, brands, onRefresh, toast }) {
       )}
 
       {sampleModal && <SampleModal product={sampleModal} market={market} onClose={() => setSampleModal(null)} onRefresh={onRefresh} toast={toast} profile={profile} />}
+      {detailModal && <ProductDetailModal product={detailModal} onClose={() => setDetailModal(null)} />}
     </div>
   );
 }
@@ -517,6 +663,7 @@ export function MarketOrders({ products, orders, shipments, onRefresh, toast }) 
 
   return (
     <div>
+      <ReApprovalBanner orders={myOrders} onRefresh={onRefresh} toast={toast} />
       <div className="section-header">
         <div><div className="section-title">My Orders</div><div className="section-desc">{market}</div></div>
       </div>
@@ -661,6 +808,7 @@ export function SupplierCatalog({ products, orders }) {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [activeOnly, setActiveOnly] = useState(true);
+  const [detailModal, setDetailModal] = useState(null);
 
   const visibleProducts = products.filter(p => activeOnly ? p.status === 'active' : true);
   const cats = ['All', ...Array.from(new Set(visibleProducts.map(p => p.category)))];
@@ -684,7 +832,14 @@ export function SupplierCatalog({ products, orders }) {
       </div>
       <div className="card-grid">
         {filtered.map(p => (
-          <ProductCard key={p.id} p={p} orders={orders.filter(o => o.type === 'standard')} showStatus />
+          <div key={p.id} style={{ position: 'relative' }}>
+            <div
+              style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 180, cursor: 'pointer', zIndex: 1 }}
+              onClick={() => setDetailModal(p)}
+              title="View full details"
+            />
+            <ProductCard p={p} orders={orders.filter(o => o.type === 'standard')} showStatus />
+          </div>
         ))}
         {filtered.length === 0 && (
           <div className="empty" style={{ gridColumn: '1/-1' }}>
@@ -693,6 +848,7 @@ export function SupplierCatalog({ products, orders }) {
           </div>
         )}
       </div>
+      {detailModal && <ProductDetailModal product={detailModal} onClose={() => setDetailModal(null)} />}
     </div>
   );
 }

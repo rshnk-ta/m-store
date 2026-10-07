@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
-import { Modal, Icon, StageBadge, MultiImageUpload } from '../components/UI';
+import { Modal, Icon, StageBadge, MultiImageUpload, Lightbox } from '../components/UI';
 import { CATEGORIES, CATEGORY_ABBR } from '../lib/constants';
-import { OrderDetailModal, ShipmentsTab, TimelineTab } from './AdminViews';
+import { OrderDetailModal, ShipmentsTab, TimelineTab, ProductDetailModal } from './AdminViews';
 import { uploadImage, notifyUsers } from '../lib/db';
 
 // ── SKU GENERATOR ──────────────────────────────────────────────────────────
@@ -24,7 +24,6 @@ function VariantForm({ brands, category, existingVariants = [], onAdd }) {
   const [vForm, setVForm] = useState({ brand: brands[0]?.name || '', sku: '', imageFiles: [] });
   const [imagePreviews, setImagePreviews] = useState([]);
 
-  // Auto-generate SKU on mount
   useEffect(() => {
     if (brands[0] && category) {
       const brand = brands[0];
@@ -58,14 +57,7 @@ function VariantForm({ brands, category, existingVariants = [], onAdd }) {
   const handleAdd = () => {
     if (!vForm.sku.trim() || !vForm.brand) return;
     const brand = brands.find(b => b.name === vForm.brand);
-    onAdd({
-      tempId: Math.random().toString(36).slice(2),
-      brand: vForm.brand,
-      sku: vForm.sku,
-      color: brand?.color || '#000000',
-      imageFiles: vForm.imageFiles,
-    });
-    // Reset form and auto-generate next SKU for next variant
+    onAdd({ tempId: Math.random().toString(36).slice(2), brand: vForm.brand, sku: vForm.sku, color: brand?.color || '#000000', imageFiles: vForm.imageFiles });
     const catAbbr = CATEGORY_ABBR[category] || 'XX';
     const allExisting = [...existingVariants, { sku: vForm.sku }];
     const nextBrand = brands.find(b => b.name !== vForm.brand) || brands[0];
@@ -87,12 +79,7 @@ function VariantForm({ brands, category, existingVariants = [], onAdd }) {
         </div>
         <div className="form-group">
           <label>SKU (auto-generated, editable)</label>
-          <input
-            value={vForm.sku}
-            onChange={e => setVForm(f => ({ ...f, sku: e.target.value }))}
-            placeholder="e.g. BRH_DW_001"
-            style={{ fontFamily: 'monospace', fontSize: 12 }}
-          />
+          <input value={vForm.sku} onChange={e => setVForm(f => ({ ...f, sku: e.target.value }))} placeholder="e.g. BRH_DW_001" style={{ fontFamily: 'monospace', fontSize: 12 }} />
         </div>
       </div>
       <div className="form-group full" style={{ marginBottom: 12 }}>
@@ -106,8 +93,7 @@ function VariantForm({ brands, category, existingVariants = [], onAdd }) {
           ))}
           <label style={{ width: 56, height: 56, border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius-md)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-muted)', gap: 2 }}>
             <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={handleImages} />
-            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-            <span style={{ fontSize: 9 }}>Add</span>
+            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span><span style={{ fontSize: 9 }}>Add</span>
           </label>
         </div>
       </div>
@@ -137,7 +123,14 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
         name: form.name, category: form.category,
         moq: parseInt(form.moq), unit_price: parseFloat(form.unit_price),
         production_lead_days: parseInt(form.production_lead_days),
-        shipping_lead_days: parseInt(form.shipping_lead_days),
+        carton_l: form.carton_l ? parseFloat(form.carton_l) : null,
+        carton_w: form.carton_w ? parseFloat(form.carton_w) : null,
+        carton_h: form.carton_h ? parseFloat(form.carton_h) : null,
+        units_per_carton: form.units_per_carton ? parseInt(form.units_per_carton) : null,
+        gross_weight_kg: form.gross_weight_kg ? parseFloat(form.gross_weight_kg) : null,
+        product_l: form.product_l ? parseFloat(form.product_l) : null,
+        product_w: form.product_w ? parseFloat(form.product_w) : null,
+        product_h: form.product_h ? parseFloat(form.product_h) : null,
         status: 'pending_approval', image_url: imageUrl, submitted_by: profile?.id,
       }).select().single();
       if (error) throw error;
@@ -147,25 +140,21 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
           product_id: product.id, brand: v.brand, sku: v.sku, color: v.color,
         }).select().single();
         if (!variant) continue;
-
-        // Upload images only if present — image is optional
         const files = v.imageFiles?.filter(f => f instanceof File) || [];
         for (let i = 0; i < files.length; i++) {
           const url = await uploadImage(files[i], 'variants');
           if (url) {
             await supabase.from('variant_images').insert({ variant_id: variant.id, image_url: url, sort_order: i });
-            // Set first as main image_url
             if (i === 0) await supabase.from('product_variants').update({ image_url: url }).eq('id', variant.id);
           }
         }
       }
 
-      // Notify admins
       const { data: admins } = await supabase.from('users').select('id').eq('role', 'admin');
       if (admins?.length) await notifyUsers(admins.map(u => u.id), 'product_pending', 'New Item for Approval', `"${form.name}" has been submitted for catalog approval.`, { product_id: product.id });
 
       toast(`Submitted with ${variants.length} variant${variants.length !== 1 ? 's' : ''}`, 'success');
-      setForm({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', production_lead_days: 30, shipping_lead_days: 45 });
+      setForm({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', production_lead_days: 30, carton_l: '', carton_w: '', carton_h: '', units_per_carton: '', gross_weight_kg: '', product_l: '', product_w: '', product_h: '' });
       setVariants([]); setImageFile(null); setStep(1);
       onRefresh();
     } catch (e) { toast('Error: ' + e.message, 'error'); }
@@ -181,7 +170,6 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
           <span className={`filter-chip${step === 2 ? ' active' : ''}`} onClick={() => setStep(2)}>2 · Variants {variants.length > 0 && `(${variants.length})`}</span>
         </div>
       </div>
-
       {step === 1 && (
         <div className="card" style={{ padding: 24, maxWidth: 640 }}>
           <div className="form-grid">
@@ -190,15 +178,24 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
             <div className="form-group"><label>MOQ (shared across all brands)</label><input type="number" value={form.moq} onChange={e => set('moq', e.target.value)} placeholder="500" /></div>
             <div className="form-group"><label>Unit Price (USD)</label><input type="number" step="0.01" value={form.unit_price} onChange={e => set('unit_price', e.target.value)} placeholder="2.80" /></div>
             <div className="form-group"><label>Production Lead (days)</label><input type="number" value={form.production_lead_days} onChange={e => set('production_lead_days', e.target.value)} /></div>
-            <div className="form-group"><label>Shipping Lead (days)</label><input type="number" value={form.shipping_lead_days} onChange={e => set('shipping_lead_days', e.target.value)} /></div>
+            <div className="form-group full" style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Carton / Packaging Info</div>
+              <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
+                <div className="form-group"><label>Carton L (cm)</label><input type="number" step="0.1" value={form.carton_l} onChange={e => set('carton_l', e.target.value)} placeholder="60" /></div>
+                <div className="form-group"><label>Carton W (cm)</label><input type="number" step="0.1" value={form.carton_w} onChange={e => set('carton_w', e.target.value)} placeholder="40" /></div>
+                <div className="form-group"><label>Carton H (cm)</label><input type="number" step="0.1" value={form.carton_h} onChange={e => set('carton_h', e.target.value)} placeholder="30" /></div>
+                <div className="form-group"><label>Units / Carton</label><input type="number" value={form.units_per_carton} onChange={e => set('units_per_carton', e.target.value)} placeholder="12" /></div>
+                <div className="form-group"><label>Gross Weight (kg)</label><input type="number" step="0.01" value={form.gross_weight_kg} onChange={e => set('gross_weight_kg', e.target.value)} placeholder="8.5" /></div>
+                <div className="form-group"><label>Product L (cm) <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>opt.</span></label><input type="number" step="0.1" value={form.product_l} onChange={e => set('product_l', e.target.value)} placeholder="15" /></div>
+                <div className="form-group"><label>Product W (cm) <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>opt.</span></label><input type="number" step="0.1" value={form.product_w} onChange={e => set('product_w', e.target.value)} placeholder="10" /></div>
+                <div className="form-group"><label>Product H (cm) <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>opt.</span></label><input type="number" step="0.1" value={form.product_h} onChange={e => set('product_h', e.target.value)} placeholder="5" /></div>
+              </div>
+            </div>
             <div className="form-group full">
               <label>Default Product Image</label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '10px 14px', border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius-md)', background: 'var(--bg)' }}>
                 <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => setImageFile(e.target.files[0])} />
-                {imageFile
-                  ? <><img src={URL.createObjectURL(imageFile)} alt="" style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 'var(--radius)' }} /><span style={{ fontSize: 11, color: 'var(--green)' }}>✓ {imageFile.name}</span></>
-                  : <><span style={{ color: 'var(--text-muted)' }}>{Icon.upload}</span><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Click to upload</span></>
-                }
+                {imageFile ? <><img src={URL.createObjectURL(imageFile)} alt="" style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 'var(--radius)' }} /><span style={{ fontSize: 11, color: 'var(--green)' }}>✓ {imageFile.name}</span></> : <><span style={{ color: 'var(--text-muted)' }}>{Icon.upload}</span><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Click to upload</span></>}
               </label>
             </div>
           </div>
@@ -207,44 +204,33 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
           </div>
         </div>
       )}
-
       {step === 2 && (
         <div className="card" style={{ padding: 24, maxWidth: 760 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 16 }}>
-            Add one variant per brand. Images are optional but recommended. MOQ <strong>{form.moq}</strong> shared across all variants.
-          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 16 }}>Add one variant per brand. Images are optional but recommended. MOQ <strong>{form.moq}</strong> shared across all variants.</div>
           {variants.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 12, textAlign: 'center', padding: '12px 0' }}>No variants yet</div>}
           {variants.map((v, idx) => (
             <div key={v.tempId} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: v.color, display: 'inline-block', flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: 12 }}><strong>{v.brand}</strong> — {v.sku}</span>
-              {/* Inline image upload for this variant */}
               <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}>
                 <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
                   const files = Array.from(e.target.files);
                   setVariants(vs => vs.map((x, i) => i === idx ? { ...x, imageFiles: [...(x.imageFiles || []), ...files] } : x));
                 }} />
-                {v.imageFiles?.filter(f => f instanceof File).length > 0
-                  ? <span style={{ color: 'var(--green)' }}>✓ {v.imageFiles.filter(f => f instanceof File).length} image{v.imageFiles.filter(f => f instanceof File).length !== 1 ? 's' : ''} · Change</span>
-                  : <span style={{ color: 'var(--text-muted)', padding: '3px 8px', border: '1px dashed var(--border-strong)', borderRadius: 4 }}>{Icon.upload} Add image</span>
-                }
+                {v.imageFiles?.filter(f => f instanceof File).length > 0 ? <span style={{ color: 'var(--green)' }}>✓ {v.imageFiles.filter(f => f instanceof File).length} image{v.imageFiles.filter(f => f instanceof File).length !== 1 ? 's' : ''} · Change</span> : <span style={{ color: 'var(--text-muted)', padding: '3px 8px', border: '1px dashed var(--border-strong)', borderRadius: 4 }}>{Icon.upload} Add image</span>}
               </label>
               <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter((_, i) => i !== idx))} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
             </div>
           ))}
-
           <VariantForm brands={brands} category={form.category} existingVariants={variants} onAdd={(v) => setVariants(prev => [...prev, v])} />
-
           <div className="divider" />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-ghost btn-sm" onClick={() => setStep(1)}>← Back</button>
-            <button className="btn btn-primary btn-sm" onClick={submit} disabled={saving || variants.length === 0}>
-              {saving ? 'Submitting…' : `Submit for Approval (${variants.length} variant${variants.length !== 1 ? 's' : ''})`}
-            </button>
+            <button className="btn btn-primary btn-sm" onClick={submit} disabled={saving || variants.length === 0}>{saving ? 'Submitting…' : `Submit for Approval (${variants.length} variant${variants.length !== 1 ? 's' : ''})`}</button>
             {saving && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Uploading, please wait…</span>}
             <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => {
               if (window.confirm('Reset the entire form?')) {
-                setForm({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', production_lead_days: 30, shipping_lead_days: 45 });
+                setForm({ name: '', category: CATEGORIES[0], moq: '', unit_price: '', production_lead_days: 30, carton_l: '', carton_w: '', carton_h: '', units_per_carton: '', gross_weight_kg: '', product_l: '', product_w: '', product_h: '' });
                 setVariants([]); setImageFile(null); setStep(1);
               }
             }}>Reset Form</button>
@@ -259,12 +245,13 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
 export function SupplierSubmissions({ products, brands, onRefresh, toast }) {
   const { profile } = useAuth();
   const [editModal, setEditModal] = useState(null);
-  const myItems = products.filter(p => p.submitted_by === profile?.id);
+  // Only show pending / rejected items here — active items have their own section
+  const myItems = products.filter(p => p.submitted_by === profile?.id && (p.status === 'pending_approval' || p.status === 'rejected' || p.status === 'draft'));
 
   return (
     <div>
-      <div className="section-header"><div><div className="section-title">My Submissions</div><div className="section-desc">Items you've submitted</div></div></div>
-      {myItems.length === 0 && <div className="empty"><div className="empty-icon">◻</div><div className="empty-title">No submissions yet</div></div>}
+      <div className="section-header"><div><div className="section-title">My Submissions</div><div className="section-desc">Pending and rejected items</div></div></div>
+      {myItems.length === 0 && <div className="empty"><div className="empty-icon">◻</div><div className="empty-title">No pending submissions</div><div className="empty-desc">Active items are managed in "My Active Catalogue"</div></div>}
       <div className="card table-wrap">
         <table>
           <thead><tr><th>Product</th><th>Category</th><th>MOQ</th><th>Price</th><th>Variants</th><th>Status</th><th></th></tr></thead>
@@ -277,17 +264,13 @@ export function SupplierSubmissions({ products, brands, onRefresh, toast }) {
                 <td>${p.unit_price}</td>
                 <td>{p.product_variants?.length || 0}</td>
                 <td>
-                  <span className={`badge ${p.status === 'active' ? 'badge-green' : p.status === 'pending_approval' ? 'badge-amber' : p.status === 'rejected' ? 'badge-red' : 'badge-grey'}`}>
+                  <span className={`badge ${p.status === 'pending_approval' ? 'badge-amber' : p.status === 'rejected' ? 'badge-red' : 'badge-grey'}`}>
                     {p.status === 'pending_approval' ? 'Pending' : p.status}
                   </span>
                 </td>
                 <td>
-                  {(p.status === 'pending_approval' || p.status === 'rejected') && (
-                    <button className="btn btn-secondary btn-sm" onClick={() => setEditModal(p)}>{Icon.edit} Edit</button>
-                  )}
-                  {p.status === 'rejected' && p.rejection_comment && (
-                    <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 4 }}>Reason: {p.rejection_comment}</div>
-                  )}
+                  {(p.status === 'pending_approval' || p.status === 'rejected') && <button className="btn btn-secondary btn-sm" onClick={() => setEditModal(p)}>{Icon.edit} Edit</button>}
+                  {p.status === 'rejected' && p.rejection_comment && <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 4 }}>Reason: {p.rejection_comment}</div>}
                 </td>
               </tr>
             ))}
@@ -299,10 +282,312 @@ export function SupplierSubmissions({ products, brands, onRefresh, toast }) {
   );
 }
 
-// ── EDIT MODAL ─────────────────────────────────────────────────────────────
+// ── ACTIVE CATALOGUE MANAGEMENT ────────────────────────────────────────────
+// Supplier can edit or deactivate items they submitted that are currently active.
+// Every change is logged to product_change_log; if scope = 'all_collecting',
+// all collecting orders for that product get an order_reapproval entry and the
+// market managers are notified.
+export function SupplierActiveCatalogue({ products, orders, brands, onRefresh, toast }) {
+  const { profile } = useAuth();
+  const [detailModal, setDetailModal] = useState(null);
+  const [changeModal, setChangeModal] = useState(null); // { product, mode: 'edit'|'deactivate' }
+  const [historyModal, setHistoryModal] = useState(null);
+
+  const myActive = products.filter(p => p.submitted_by === profile?.id && p.status === 'active');
+
+  const openEdit = (p) => setChangeModal({ product: p, mode: 'edit' });
+  const openDeactivate = (p) => setChangeModal({ product: p, mode: 'deactivate' });
+  const openHistory = (p) => setHistoryModal(p);
+
+  return (
+    <div>
+      <div className="section-header">
+        <div><div className="section-title">My Active Catalogue</div><div className="section-desc">{myActive.length} live item{myActive.length !== 1 ? 's' : ''}</div></div>
+      </div>
+
+      {myActive.length === 0 && (
+        <div className="empty"><div className="empty-icon">◻</div><div className="empty-title">No active items yet</div><div className="empty-desc">Once an item is approved it appears here</div></div>
+      )}
+
+      <div className="card-grid">
+        {myActive.map(p => {
+          const activeOrders = orders.filter(o => o.product_id === p.id && o.type === 'standard' && o.status !== 'cancelled');
+          const hasCollecting = activeOrders.some(o => o.status === 'collecting');
+          return (
+            <div key={p.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              {/* Card header — clickable to view details */}
+              <div style={{ cursor: 'pointer', padding: 16, flex: 1 }} onClick={() => setDetailModal(p)}>
+                {p.image_url && <img src={p.image_url} alt={p.name} style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 'var(--radius)', marginBottom: 12 }} onError={e => e.target.style.display = 'none'} />}
+                <div style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 500, marginBottom: 4 }}>{p.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>{p.category} · ${p.unit_price}/unit · MOQ {p.moq}</div>
+                {activeOrders.length > 0 && (
+                  <div style={{ fontSize: 10, color: 'var(--text-secondary)', display: 'flex', gap: 8 }}>
+                    <span>{activeOrders.length} active order{activeOrders.length !== 1 ? 's' : ''}</span>
+                    {hasCollecting && <span style={{ color: 'var(--accent-warm)' }}>· collecting</span>}
+                  </div>
+                )}
+              </div>
+              {/* Action row */}
+              <div style={{ display: 'flex', gap: 6, padding: '10px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg)' }} onClick={e => e.stopPropagation()}>
+                <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => openEdit(p)}>{Icon.edit} Edit</button>
+                <button className="btn btn-danger btn-sm" onClick={() => openDeactivate(p)}>Deactivate</button>
+                <button className="btn btn-ghost btn-sm" title="Change history" onClick={() => openHistory(p)}>⏱</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {detailModal && <ProductDetailModal product={detailModal} onClose={() => setDetailModal(null)} />}
+      {changeModal && (
+        <CatalogueChangeModal
+          product={changeModal.product}
+          mode={changeModal.mode}
+          brands={brands}
+          orders={orders}
+          profile={profile}
+          onClose={() => setChangeModal(null)}
+          onSave={() => { setChangeModal(null); onRefresh(); }}
+          toast={toast}
+        />
+      )}
+      {historyModal && <ChangeHistoryModal product={historyModal} onClose={() => setHistoryModal(null)} />}
+    </div>
+  );
+}
+
+// ── CATALOGUE CHANGE MODAL ─────────────────────────────────────────────────
+// Handles both 'edit' and 'deactivate' flows for active catalogue items.
+// Enforces:
+//   • Only 'collecting' orders can be affected — orders in_production+ are untouched.
+//   • If scope = 'all_collecting': create order_reapproval rows + notify market managers.
+//   • Changes are logged to product_change_log with before/after snapshots.
+//   • Footnote shows the supplier the limitation explicitly.
+function CatalogueChangeModal({ product, mode, brands, orders, profile, onClose, onSave, toast }) {
+  const isEdit = mode === 'edit';
+  const [scope, setScope] = useState('new_orders_only');
+  const [note, setNote] = useState('');
+  const [form, setForm] = useState({
+    name: product.name,
+    unit_price: product.unit_price,
+    moq: product.moq,
+    production_lead_days: product.production_lead_days,
+    carton_l: product.carton_l ?? '',
+    carton_w: product.carton_w ?? '',
+    carton_h: product.carton_h ?? '',
+    units_per_carton: product.units_per_carton ?? '',
+    gross_weight_kg: product.gross_weight_kg ?? '',
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // Collecting orders for this product (these can be affected by changes)
+  const collectingOrders = orders.filter(o => o.product_id === product.id && o.type === 'standard' && o.status === 'collecting');
+  // Orders already past collecting (cannot be affected — shown for supplier awareness)
+  const lockedOrders = orders.filter(o => o.product_id === product.id && o.type === 'standard' && !['collecting', 'cancelled'].includes(o.status));
+
+  const apply = async () => {
+    setSaving(true);
+    try {
+      const changeType = isEdit ? 'edit' : 'deactivate';
+      const oldValues = isEdit
+        ? { name: product.name, unit_price: product.unit_price, moq: product.moq, production_lead_days: product.production_lead_days, carton_l: product.carton_l, carton_w: product.carton_w, carton_h: product.carton_h, units_per_carton: product.units_per_carton, gross_weight_kg: product.gross_weight_kg }
+        : { status: 'active' };
+      const newValues = isEdit
+        ? { name: form.name, unit_price: parseFloat(form.unit_price) || product.unit_price, moq: parseInt(form.moq) || product.moq, production_lead_days: parseInt(form.production_lead_days) || product.production_lead_days, carton_l: form.carton_l ? parseFloat(form.carton_l) : null, carton_w: form.carton_w ? parseFloat(form.carton_w) : null, carton_h: form.carton_h ? parseFloat(form.carton_h) : null, units_per_carton: form.units_per_carton ? parseInt(form.units_per_carton) : null, gross_weight_kg: form.gross_weight_kg ? parseFloat(form.gross_weight_kg) : null }
+        : { status: 'draft' };
+
+      // 1. Write the change log entry
+      const { data: changeLog, error: clErr } = await supabase.from('product_change_log').insert({
+        product_id: product.id,
+        changed_by: profile.id,
+        change_type: changeType,
+        scope,
+        old_values: oldValues,
+        new_values: newValues,
+        note: note.trim() || null,
+      }).select().single();
+      if (clErr) throw clErr;
+
+      // 2. Apply the product change
+      if (isEdit) {
+        await supabase.from('products').update({ ...newValues, updated_at: new Date().toISOString() }).eq('id', product.id);
+      } else {
+        // Deactivate: set to draft (hides from market catalog)
+        await supabase.from('products').update({ status: 'draft', updated_at: new Date().toISOString() }).eq('id', product.id);
+      }
+
+      // 3. If scope = all_collecting, create re-approval rows for each collecting order and notify markets
+      if (scope === 'all_collecting' && collectingOrders.length > 0) {
+        for (const o of collectingOrders) {
+          await supabase.from('order_reapproval').insert({
+            order_id: o.id,
+            change_log_id: changeLog.id,
+            status: 'pending',
+          });
+        }
+        // Notify distinct market managers who placed these orders
+        const placedByIds = [...new Set(collectingOrders.map(o => o.placed_by).filter(Boolean))];
+        if (placedByIds.length > 0) {
+          const msgTitle = isEdit ? `Catalogue Item Changed: ${product.name}` : `Catalogue Item Removed: ${product.name}`;
+          const msgBody = isEdit
+            ? `The supplier has updated "${product.name}". Your collecting order is affected — please review and re-confirm whether you want to proceed.`
+            : `"${product.name}" has been deactivated by the supplier. Your collecting order is affected — please review and decide whether to proceed or cancel.`;
+          await notifyUsers(placedByIds, 'reapproval_required', msgTitle, msgBody, { product_id: product.id, change_log_id: changeLog.id });
+        }
+      }
+
+      const action = isEdit ? 'Item updated' : 'Item deactivated';
+      const suffix = scope === 'all_collecting' && collectingOrders.length > 0
+        ? ` — ${collectingOrders.length} collecting order${collectingOrders.length !== 1 ? 's' : ''} sent for market re-approval`
+        : '';
+      toast(`${action}${suffix}`, 'success');
+      onSave();
+    } catch (e) { toast('Error: ' + e.message, 'error'); }
+    setSaving(false);
+  };
+
+  return (
+    <Modal
+      title={isEdit ? `Edit: ${product.name}` : `Deactivate: ${product.name}`}
+      subtitle={isEdit ? 'Changes to an active catalogue item' : 'Remove this item from the catalogue'}
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <button className="btn btn-secondary btn-sm" onClick={onClose}>Cancel</button>
+          <button className={`btn btn-sm ${isEdit ? 'btn-primary' : 'btn-danger'}`} onClick={apply} disabled={saving}>
+            {saving ? 'Applying…' : isEdit ? 'Apply Changes' : 'Deactivate Item'}
+          </button>
+        </>
+      }
+    >
+      {/* Scope picker */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Who does this change apply to?</div>
+        <div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}>
+          {[
+            { val: 'new_orders_only', label: 'New orders only', desc: 'Existing collecting orders are not affected by this change.' },
+            { val: 'all_collecting', label: 'All collecting orders too', desc: 'Market managers who have placed orders will be notified and asked to re-confirm their order.' },
+          ].map(opt => (
+            <label key={opt.val} style={{ display: 'flex', gap: 10, cursor: 'pointer', padding: '10px 14px', border: `1px solid ${scope === opt.val ? 'var(--accent-warm)' : 'var(--border)'}`, borderRadius: 'var(--radius-md)', background: scope === opt.val ? 'var(--accent-light)' : 'var(--bg)' }}>
+              <input type="radio" name="scope" value={opt.val} checked={scope === opt.val} onChange={() => setScope(opt.val)} style={{ marginTop: 2 }} />
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 2 }}>{opt.label}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{opt.desc}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Live order summary for supplier awareness */}
+      {(collectingOrders.length > 0 || lockedOrders.length > 0) && (
+        <div style={{ marginBottom: 20, padding: '12px 14px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', fontSize: 11 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6, color: 'var(--text-secondary)' }}>Current Orders</div>
+          {collectingOrders.length > 0 && (
+            <div style={{ marginBottom: 4, color: scope === 'all_collecting' ? 'var(--accent-warm)' : 'var(--text-secondary)' }}>
+              • <strong>{collectingOrders.length}</strong> order{collectingOrders.length !== 1 ? 's' : ''} in <em>collecting</em> — {scope === 'all_collecting' ? 'will be sent for re-approval' : 'will NOT be affected'}
+            </div>
+          )}
+          {lockedOrders.length > 0 && (
+            <div style={{ color: 'var(--text-muted)' }}>
+              • <strong>{lockedOrders.length}</strong> order{lockedOrders.length !== 1 ? 's' : ''} already past collecting — <strong>these cannot be affected</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Edit form (only when mode = edit) */}
+      {isEdit && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Updated Details</div>
+          <div className="form-grid">
+            <div className="form-group full"><label>Name</label><input value={form.name} onChange={e => set('name', e.target.value)} /></div>
+            <div className="form-group"><label>Unit Price (USD)</label><input type="number" step="0.01" value={form.unit_price} onChange={e => set('unit_price', e.target.value)} /></div>
+            <div className="form-group"><label>MOQ</label><input type="number" value={form.moq} onChange={e => set('moq', e.target.value)} /></div>
+            <div className="form-group"><label>Production Lead (days)</label><input type="number" value={form.production_lead_days} onChange={e => set('production_lead_days', e.target.value)} /></div>
+          </div>
+          <div style={{ marginTop: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Packaging (optional)</div>
+            <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
+              <div className="form-group"><label>Carton L (cm)</label><input type="number" step="0.1" value={form.carton_l} onChange={e => set('carton_l', e.target.value)} /></div>
+              <div className="form-group"><label>Carton W (cm)</label><input type="number" step="0.1" value={form.carton_w} onChange={e => set('carton_w', e.target.value)} /></div>
+              <div className="form-group"><label>Carton H (cm)</label><input type="number" step="0.1" value={form.carton_h} onChange={e => set('carton_h', e.target.value)} /></div>
+              <div className="form-group"><label>Units / Carton</label><input type="number" value={form.units_per_carton} onChange={e => set('units_per_carton', e.target.value)} /></div>
+              <div className="form-group"><label>Gross Weight (kg)</label><input type="number" step="0.01" value={form.gross_weight_kg} onChange={e => set('gross_weight_kg', e.target.value)} /></div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Optional note */}
+      <div className="form-group" style={{ marginBottom: 16 }}>
+        <label>Reason / Note for markets <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span></label>
+        <textarea value={note} onChange={e => setNote(e.target.value)} placeholder={isEdit ? 'e.g. Updated carton dimensions to reflect new packaging from factory.' : 'e.g. Item discontinued by manufacturer.'} style={{ minHeight: 52 }} />
+      </div>
+
+      {/* Supplier footnote / disclaimer */}
+      <div style={{ padding: '10px 14px', background: '#FFF7ED', border: '1px solid #FDBA74', borderRadius: 'var(--radius-md)', fontSize: 11, color: '#92400E', lineHeight: 1.6 }}>
+        <strong>Important:</strong> Changes can only affect orders still in <em>collecting</em> status. Orders that have already been accepted or are further along in production cannot be modified — they will continue under the original terms.
+      </div>
+    </Modal>
+  );
+}
+
+// ── CHANGE HISTORY MODAL ───────────────────────────────────────────────────
+function ChangeHistoryModal({ product, onClose }) {
+  const [log, setLog] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase
+      .from('product_change_log')
+      .select('*, users:changed_by(name, email)')
+      .eq('product_id', product.id)
+      .order('created_at', { ascending: false })
+      .then(({ data }) => { setLog(data || []); setLoading(false); });
+  }, [product.id]);
+
+  return (
+    <Modal title={`Change History`} subtitle={product.name} onClose={onClose}>
+      {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12, textAlign: 'center', padding: 24 }}>Loading…</div>}
+      {!loading && log.length === 0 && <div className="empty"><div className="empty-icon">○</div><div className="empty-title">No changes recorded</div></div>}
+      {log.map(entry => {
+        const scopeLabel = entry.scope === 'all_collecting' ? 'Applied to collecting orders' : 'New orders only';
+        return (
+          <div key={entry.id} style={{ padding: '14px 0', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span className={`badge ${entry.change_type === 'edit' ? 'badge-blue' : entry.change_type === 'deactivate' ? 'badge-red' : 'badge-green'}`}>
+                {entry.change_type}
+              </span>
+              <span className="badge badge-grey" style={{ fontSize: 9 }}>{scopeLabel}</span>
+              <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' }}>{new Date(entry.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+            {entry.note && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8, fontStyle: 'italic' }}>{entry.note}</div>}
+            {entry.change_type === 'edit' && entry.old_values && entry.new_values && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {Object.keys(entry.new_values).filter(k => entry.old_values[k] !== entry.new_values[k]).map(k => (
+                  <span key={k} style={{ padding: '2px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 3 }}>
+                    <strong>{k}</strong>: {String(entry.old_values[k] ?? '—')} → {String(entry.new_values[k] ?? '—')}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+              by {entry.users?.name || entry.users?.email || 'supplier'}
+            </div>
+          </div>
+        );
+      })}
+    </Modal>
+  );
+}
+
+// ── EDIT MODAL (pending/rejected items) ───────────────────────────────────
 function SupplierEditModal({ product, brands, onClose, onSave, toast }) {
   const { profile } = useAuth();
-  const [form, setForm] = useState({ name: product.name, category: product.category, moq: product.moq, unit_price: product.unit_price, production_lead_days: product.production_lead_days, shipping_lead_days: product.shipping_lead_days });
+  const [form, setForm] = useState({ name: product.name, category: product.category, moq: product.moq, unit_price: product.unit_price, production_lead_days: product.production_lead_days, carton_l: product.carton_l ?? '', carton_w: product.carton_w ?? '', carton_h: product.carton_h ?? '', units_per_carton: product.units_per_carton ?? '', gross_weight_kg: product.gross_weight_kg ?? '', product_l: product.product_l ?? '', product_w: product.product_w ?? '', product_h: product.product_h ?? '' });
   const [variants, setVariants] = useState((product.product_variants || []).map(v => ({ ...v, isExisting: true, toDelete: false })));
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -325,7 +610,6 @@ function SupplierEditModal({ product, brands, onClose, onSave, toast }) {
           }
         }
       }
-      // Notify admins
       const { data: admins } = await supabase.from('users').select('id').eq('role', 'admin');
       if (admins?.length) await notifyUsers(admins.map(u => u.id), 'product_pending', 'Item Updated — Needs Approval', `"${form.name}" has been updated and resubmitted.`, { product_id: product.id });
       toast('Updated and resubmitted', 'success');
@@ -344,7 +628,17 @@ function SupplierEditModal({ product, brands, onClose, onSave, toast }) {
         <div className="form-group"><label>MOQ</label><input type="number" value={form.moq} onChange={e => set('moq', e.target.value)} /></div>
         <div className="form-group"><label>Unit Price</label><input type="number" step="0.01" value={form.unit_price} onChange={e => set('unit_price', e.target.value)} /></div>
         <div className="form-group"><label>Production Lead (days)</label><input type="number" value={form.production_lead_days} onChange={e => set('production_lead_days', e.target.value)} /></div>
-        <div className="form-group"><label>Shipping Lead (days)</label><input type="number" value={form.shipping_lead_days} onChange={e => set('shipping_lead_days', e.target.value)} /></div>
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', margin: '14px 0 10px' }}>Carton / Packaging Info</div>
+      <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
+        <div className="form-group"><label>Carton L (cm)</label><input type="number" step="0.1" value={form.carton_l} onChange={e => set('carton_l', e.target.value)} placeholder="60" /></div>
+        <div className="form-group"><label>Carton W (cm)</label><input type="number" step="0.1" value={form.carton_w} onChange={e => set('carton_w', e.target.value)} placeholder="40" /></div>
+        <div className="form-group"><label>Carton H (cm)</label><input type="number" step="0.1" value={form.carton_h} onChange={e => set('carton_h', e.target.value)} placeholder="30" /></div>
+        <div className="form-group"><label>Units / Carton</label><input type="number" value={form.units_per_carton} onChange={e => set('units_per_carton', e.target.value)} placeholder="12" /></div>
+        <div className="form-group"><label>Gross Weight (kg)</label><input type="number" step="0.01" value={form.gross_weight_kg} onChange={e => set('gross_weight_kg', e.target.value)} placeholder="8.5" /></div>
+        <div className="form-group"><label>Product L (cm)</label><input type="number" step="0.1" value={form.product_l} onChange={e => set('product_l', e.target.value)} placeholder="15" /></div>
+        <div className="form-group"><label>Product W (cm)</label><input type="number" step="0.1" value={form.product_w} onChange={e => set('product_w', e.target.value)} placeholder="10" /></div>
+        <div className="form-group"><label>Product H (cm)</label><input type="number" step="0.1" value={form.product_h} onChange={e => set('product_h', e.target.value)} placeholder="5" /></div>
       </div>
       <div className="divider" />
       <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Variants</div>
@@ -384,7 +678,6 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
   const [selected, setSelected] = useState(null);
   const [acceptModal, setAcceptModal] = useState(null);
 
-  // Group ALL standard orders by product (regardless of status) so accepted/in_production/etc orders stay visible
   const productGroups = {};
   orders.filter(o => o.type === 'standard').forEach(o => {
     const p = products.find(x => x.id === o.product_id);
@@ -393,8 +686,6 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
     productGroups[o.product_id].orders.push({ ...o, product: p, variant: v });
   });
 
-  // For each tab, filter to product groups whose RELEVANT orders are in that stage.
-  // We show only the orders matching that stage within the group (not all historical orders).
   const groupForStage = (statusMatch) => Object.values(productGroups)
     .map(g => ({ product: g.product, orders: g.orders.filter(statusMatch) }))
     .filter(g => g.orders.length > 0);
@@ -420,7 +711,6 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
   const visible = statusGroups[tab] || [];
 
   const advanceAllOrders = async (productId, status) => {
-    // Only advance orders currently in the stage that precedes this one
     const precedingStatus = { in_production: 'accepted', dispatched: 'in_production' }[status];
     const productOrders = orders.filter(o => o.product_id === productId && o.type === 'standard' && o.status === precedingStatus);
     for (const o of productOrders) {
@@ -429,9 +719,7 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
     }
     const placedByIds = [...new Set(productOrders.map(o => o.placed_by).filter(Boolean))];
     const product = products.find(x => x.id === productId);
-    if (placedByIds.length) {
-      await notifyUsers(placedByIds, 'order_update', `Order Update`, `Your order for "${product?.name}" is now: ${status.replace(/_/g, ' ')}.`, { product_id: productId });
-    }
+    if (placedByIds.length) await notifyUsers(placedByIds, 'order_update', 'Order Update', `Your order for "${product?.name}" is now: ${status.replace(/_/g, ' ')}.`, { product_id: productId });
     toast('Status updated', 'success');
     onRefresh();
   };
@@ -447,9 +735,7 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
           </div>
         ))}
       </div>
-
       {visible.length === 0 && <div className="empty"><div className="empty-icon">○</div><div className="empty-title">Nothing here</div></div>}
-
       {visible.map(({ product, orders: grpOrders }) => {
         const totalQty = grpOrders.reduce((s, o) => s + o.qty, 0);
         const repOrder = grpOrders[0];
@@ -460,9 +746,7 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
               <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 500 }}>{product?.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{grpOrders.length} market order{grpOrders.length !== 1 ? 's' : ''} · {totalQty} total units</div>
-                {tab === 'cancelled' && repOrder?.cancelled_reason && (
-                  <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 4 }}>{repOrder.cancelled_reason}</div>
-                )}
+                {tab === 'cancelled' && repOrder?.cancelled_reason && <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 4 }}>{repOrder.cancelled_reason}</div>}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 {tab === 'moq_reached' && <button className="btn btn-sm btn-success" onClick={() => setAcceptModal(grpOrders)}>{Icon.check} Accept All</button>}
@@ -472,7 +756,9 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
               </div>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr><th style={{ padding: '6px 18px', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', textAlign: 'left' }}>Market</th><th style={{ padding: '6px 18px', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', textAlign: 'left' }}>Brand</th><th style={{ padding: '6px 18px', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', textAlign: 'left' }}>Qty</th><th style={{ padding: '6px 18px', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', textAlign: 'left' }}>Status</th></tr></thead>
+              <thead><tr>
+                {['Market','Brand','Qty','Status'].map(h => <th key={h} style={{ padding: '6px 18px', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', textAlign: 'left' }}>{h}</th>)}
+              </tr></thead>
               <tbody>
                 {grpOrders.map(o => (
                   <tr key={o.id} style={{ borderTop: '1px solid var(--border)' }}>
@@ -487,11 +773,8 @@ export function SupplierOrders({ products, orders, shipments, onRefresh, toast }
           </div>
         );
       })}
-
       {acceptModal && <AcceptModal orders={acceptModal} products={products} onClose={() => setAcceptModal(null)} onRefresh={onRefresh} toast={toast} profile={profile} />}
-      {selected && (
-        <OrderDetailModal order={selected} product={selected.product} shipments={shipments.filter(s => s.order_id === selected.id)} onClose={() => setSelected(null)} onRefresh={onRefresh} toast={toast} readOnly={false} />
-      )}
+      {selected && <OrderDetailModal order={selected} product={selected.product} shipments={shipments.filter(s => s.order_id === selected.id)} onClose={() => setSelected(null)} onRefresh={onRefresh} toast={toast} readOnly={false} />}
     </div>
   );
 }
@@ -511,27 +794,21 @@ function AcceptModal({ orders, products, onClose, onRefresh, toast, profile }) {
     const catalogPrice = product?.unit_price || 0;
     const needsCostApproval = catalogPrice > 0 && unitCost > catalogPrice * 1.05;
 
-    // Accept ALL collecting orders for this product across all markets
     const allCollecting = orders.filter(o => o.product_id === product?.id && o.type === 'standard' && o.status === 'collecting');
     for (const o of allCollecting) {
       await supabase.from('orders').update({
-        status: 'accepted',
-        unit_cost: unitCost,
-        payment_terms: form.payment_terms,
-        estimated_completion: form.estimated_completion || null,
-        notes: form.notes,
-        accepted_by: profile?.id,
-        accepted_at: new Date().toISOString(),
+        status: 'accepted', unit_cost: unitCost, payment_terms: form.payment_terms,
+        estimated_completion: form.estimated_completion || null, notes: form.notes,
+        accepted_by: profile?.id, accepted_at: new Date().toISOString(),
         cost_approval_status: needsCostApproval ? 'pending' : null,
         updated_at: new Date().toISOString(),
       }).eq('id', o.id);
       await supabase.from('timeline_log').insert({ order_id: o.id, stage: 'accepted', planned_date: form.estimated_completion || null, actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
     }
 
-    // Reset product moq_reached flag — order is now accepted
-    await supabase.from('products').update({ moq_reached: false }).eq('id', product?.id);
+    // FIX: also reset moq_reached_at when clearing moq_reached flag
+    await supabase.from('products').update({ moq_reached: false, moq_reached_at: null }).eq('id', product?.id);
 
-    // Notify all market managers
     const placedByIds = [...new Set(allCollecting.map(o => o.placed_by).filter(Boolean))];
     const msg = needsCostApproval
       ? `Your order for "${product?.name}" has been accepted at $${unitCost}/unit. Note: this is >5% above catalog price — your approval is required.`
@@ -567,7 +844,8 @@ export function SupplierConsolidated({ products, orders, onRefresh, toast }) {
       <div className="section-header"><div><div className="section-title">Consolidated View</div><div className="section-desc">Total demand per item across all markets</div></div></div>
       {activeProducts.length === 0 && <div className="empty"><div className="empty-icon">○</div><div className="empty-title">No orders yet</div></div>}
       {activeProducts.map(p => {
-        const productOrders = orders.filter(o => o.product_id === p.id && o.type === 'standard');
+        // FIX: exclude cancelled orders from MOQ bar so they don't inflate the count
+        const productOrders = orders.filter(o => o.product_id === p.id && o.type === 'standard' && o.status !== 'cancelled');
         const totalQty = productOrders.reduce((s, o) => s + o.qty, 0);
         const pct = Math.min(100, Math.round((totalQty / p.moq) * 100));
         const reached = pct >= 100;
@@ -631,23 +909,12 @@ export function SupplierSamples({ products, orders, onRefresh, toast }) {
     variant: products.find(x => x.id === o.product_id)?.product_variants?.find(v => v.id === o.variant_id),
   }));
 
-  const acknowledge = async (order) => {
-    setDetailModal(order);
-  };
-
   const markDispatched = async (order) => {
     setDispatching(order.id);
     await supabase.from('orders').update({ status: 'dispatched', updated_at: new Date().toISOString() }).eq('id', order.id);
     await supabase.from('timeline_log').insert({ order_id: order.id, stage: 'dispatched', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
-    // Notify market manager who placed the sample request
     if (order.placed_by) {
-      await supabase.from('notifications').insert({
-        user_id: order.placed_by,
-        type: 'sample_dispatched',
-        title: 'Sample Dispatched',
-        message: `Your sample of "${order.product?.name}" has been dispatched and is on its way.`,
-        order_id: order.id,
-      });
+      await supabase.from('notifications').insert({ user_id: order.placed_by, type: 'sample_dispatched', title: 'Sample Dispatched', message: `Your sample of "${order.product?.name}" has been dispatched and is on its way.`, order_id: order.id });
     }
     toast('Sample marked as dispatched', 'success');
     setDispatching(null);
@@ -673,7 +940,7 @@ export function SupplierSamples({ products, orders, onRefresh, toast }) {
                 <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{o.sample_eta || '—'}</td>
                 <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{o.placed_at?.slice(0, 10)}</td>
                 <td>
-                  {o.status === 'collecting' && <button className="btn btn-sm btn-secondary" onClick={() => acknowledge(o)}>Acknowledge →</button>}
+                  {o.status === 'collecting' && <button className="btn btn-sm btn-secondary" onClick={() => setDetailModal(o)}>Acknowledge →</button>}
                   {o.status === 'accepted' && <button className="btn btn-sm btn-primary" disabled={dispatching === o.id} onClick={() => markDispatched(o)}>{dispatching === o.id ? 'Dispatching…' : '↑ Mark Dispatched'}</button>}
                   {o.status === 'pending_approval' && <span className="badge badge-amber">Awaiting market approval</span>}
                   {o.status === 'dispatched' && <button className="btn btn-sm btn-secondary" onClick={async () => {
@@ -702,15 +969,8 @@ function SampleAcknowledgeModal({ order, product, onClose, onRefresh, toast, pro
   const submit = async () => {
     if (!form.sample_cost || !form.sample_eta) return;
     setSaving(true);
-    await supabase.from('orders').update({
-      status: 'pending_approval',
-      sample_cost: parseFloat(form.sample_cost),
-      sample_eta: form.sample_eta,
-      notes: form.notes,
-      updated_at: new Date().toISOString(),
-    }).eq('id', order.id);
+    await supabase.from('orders').update({ status: 'pending_approval', sample_cost: parseFloat(form.sample_cost), sample_eta: form.sample_eta, notes: form.notes, updated_at: new Date().toISOString() }).eq('id', order.id);
     await supabase.from('timeline_log').insert({ order_id: order.id, stage: 'accepted', actual_date: new Date().toISOString().slice(0, 10), created_by: profile?.id });
-    // Notify market manager
     if (order.placed_by) {
       await supabase.from('notifications').insert({ user_id: order.placed_by, type: 'sample_pending_approval', title: 'Sample Approval Required', message: `Your sample of "${product?.name}" costs $${form.sample_cost} and will arrive by ${form.sample_eta}. Please approve or reject.`, order_id: order.id });
     }

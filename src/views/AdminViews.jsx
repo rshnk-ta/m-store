@@ -5,12 +5,101 @@ import { Modal, Icon, ProductCard, StageBadge, LifecycleBar, Toast, Lightbox } f
 import { MARKETS, ORDER_STAGES, SAMPLE_STAGES, CATEGORIES } from '../lib/constants';
 import { uploadImage, notifyUsers } from '../lib/db';
 
+// ── PRODUCT DETAIL MODAL (shared — admin + market + supplier) ──────────────
+// Shows all product specs + full variant image gallery.
+// Open by clicking any ProductCard (pass onDetail to ProductCard wrappers).
+export function ProductDetailModal({ product, onClose }) {
+  const [lightbox, setLightbox] = useState(null);
+  const p = product;
+  if (!p) return null;
+
+  const hasPacking = p.carton_l || p.carton_w || p.carton_h || p.units_per_carton || p.gross_weight_kg;
+  const hasProductDims = p.product_l || p.product_w || p.product_h;
+
+  return (
+    <Modal title={p.name} subtitle={`${p.category} · ${p.status}`} onClose={onClose} wide>
+      {/* Main image */}
+      {p.image_url && (
+        <div style={{ marginBottom: 20, textAlign: 'center', cursor: 'zoom-in' }} onClick={() => setLightbox([p.image_url])}>
+          <img src={p.image_url} alt={p.name} style={{ maxHeight: 220, maxWidth: '100%', objectFit: 'contain', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }} onError={e => e.target.style.display = 'none'} />
+        </div>
+      )}
+
+      {/* Core specs */}
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Specifications</div>
+      <div className="info-grid" style={{ marginBottom: 20 }}>
+        <div className="info-item"><label>MOQ</label><span>{p.moq} units</span></div>
+        <div className="info-item"><label>Unit Price</label><span>${p.unit_price}</span></div>
+        <div className="info-item"><label>Production Lead</label><span>{p.production_lead_days ? `${p.production_lead_days} days` : '—'}</span></div>
+        <div className="info-item"><label>Category</label><span>{p.category}</span></div>
+      </div>
+
+      {/* Packaging */}
+      {hasPacking && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Carton / Packaging</div>
+          <div className="info-grid" style={{ marginBottom: 20 }}>
+            {(p.carton_l && p.carton_w && p.carton_h) && (
+              <div className="info-item"><label>Carton Dims (L×W×H)</label><span>{p.carton_l} × {p.carton_w} × {p.carton_h} cm</span></div>
+            )}
+            {p.units_per_carton && <div className="info-item"><label>Units / Carton</label><span>{p.units_per_carton}</span></div>}
+            {p.gross_weight_kg && <div className="info-item"><label>Gross Weight</label><span>{p.gross_weight_kg} kg/carton</span></div>}
+            {(p.carton_l && p.carton_w && p.carton_h) && (
+              <div className="info-item"><label>Carton CBM</label><span>{((p.carton_l / 100) * (p.carton_w / 100) * (p.carton_h / 100)).toFixed(4)} m³</span></div>
+            )}
+          </div>
+        </>
+      )}
+      {hasProductDims && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10 }}>Product Dimensions</div>
+          <div className="info-grid" style={{ marginBottom: 20 }}>
+            {(p.product_l && p.product_w && p.product_h) && (
+              <div className="info-item"><label>Dims (L×W×H)</label><span>{p.product_l} × {p.product_w} × {p.product_h} cm</span></div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Brand variants with images */}
+      {p.product_variants?.length > 0 && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 12 }}>Brand Variants</div>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            {p.product_variants.filter(v => v.is_active !== false).map(v => {
+              const imgs = v.variant_images?.map(vi => vi.image_url) || (v.image_url ? [v.image_url] : []);
+              return (
+                <div key={v.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                  <div style={{ position: 'relative', cursor: imgs.length > 0 ? 'zoom-in' : 'default' }} onClick={() => imgs.length > 0 && setLightbox(imgs)}>
+                    {imgs.length > 0
+                      ? <img src={imgs[0]} alt={v.brand} style={{ width: 88, height: 88, objectFit: 'cover', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }} />
+                      : <div style={{ width: 88, height: 88, borderRadius: 'var(--radius-md)', background: v.color, opacity: 0.15, border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 10 }}>No img</div>
+                    }
+                    {imgs.length > 1 && <div style={{ position: 'absolute', bottom: 4, right: 4, background: 'rgba(0,0,0,0.55)', color: 'white', fontSize: 9, padding: '2px 5px', borderRadius: 3 }}>+{imgs.length - 1}</div>}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.color, display: 'inline-block' }} />
+                    {v.brand}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{v.sku}</div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {lightbox && <Lightbox images={lightbox} startIndex={0} onClose={() => setLightbox(null)} />}
+    </Modal>
+  );
+}
+
 // ── ADMIN CATALOG ──────────────────────────────────────────────────────────
 export function AdminCatalog({ products, orders, brands, onRefresh, toast }) {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [activeOnly, setActiveOnly] = useState(true);
   const [modal, setModal] = useState(null);
+  const [detailModal, setDetailModal] = useState(null);
 
   const visibleProducts = products.filter(p => activeOnly ? p.status === 'active' : true);
   const cats = ['All', ...Array.from(new Set(visibleProducts.map(p => p.category)))];
@@ -20,6 +109,12 @@ export function AdminCatalog({ products, orders, brands, onRefresh, toast }) {
   );
 
   const deleteProduct = async (id) => {
+    // Guard: do not hard-delete if any non-cancelled orders exist for this product
+    const hasActiveOrders = orders.some(o => o.product_id === id && o.status !== 'cancelled');
+    if (hasActiveOrders) {
+      toast('Cannot delete: this product has active orders. Deactivate it instead.', 'error');
+      return;
+    }
     if (!window.confirm('Delete this product? This cannot be undone.')) return;
     const { error } = await supabase.from('products').delete().eq('id', id);
     if (error) { toast('Delete failed: ' + error.message, 'error'); return; }
@@ -42,12 +137,14 @@ export function AdminCatalog({ products, orders, brands, onRefresh, toast }) {
       </div>
       <div className="card-grid">
         {filtered.map(p => (
-          <ProductCard key={p.id} p={p} orders={orders} showStatus>
-            <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
-              <button className="btn btn-secondary btn-sm" onClick={() => setModal(p)}>{Icon.edit} Edit</button>
-              <button className="btn btn-danger btn-sm" onClick={() => deleteProduct(p.id)}>{Icon.trash}</button>
-            </div>
-          </ProductCard>
+          <div key={p.id} style={{ cursor: 'pointer' }} onClick={() => setDetailModal(p)}>
+            <ProductCard p={p} orders={orders} showStatus>
+              <div style={{ display: 'flex', gap: 6, marginTop: 14 }} onClick={e => e.stopPropagation()}>
+                <button className="btn btn-secondary btn-sm" onClick={() => setModal(p)}>{Icon.edit} Edit</button>
+                <button className="btn btn-danger btn-sm" onClick={() => deleteProduct(p.id)}>{Icon.trash}</button>
+              </div>
+            </ProductCard>
+          </div>
         ))}
         {filtered.length === 0 && (
           <div className="empty" style={{ gridColumn: '1/-1' }}>
@@ -58,6 +155,7 @@ export function AdminCatalog({ products, orders, brands, onRefresh, toast }) {
         )}
       </div>
       {modal && <ProductEditModal product={modal} brands={brands} onClose={() => setModal(null)} onSave={() => { setModal(null); onRefresh(); }} toast={toast} />}
+      {detailModal && <ProductDetailModal product={detailModal} onClose={() => setDetailModal(null)} />}
     </div>
   );
 }
@@ -75,7 +173,6 @@ export function ApprovalQueue({ products, brands, onRefresh, toast }) {
   const approve = async (p) => {
     setSaving(true);
     await supabase.from('products').update({ status: 'active', approved_by: profile.id, updated_at: new Date().toISOString() }).eq('id', p.id);
-    // Notify submitter
     if (p.submitted_by) {
       await supabase.from('notifications').insert({ user_id: p.submitted_by, type: 'product_approved', title: 'Item Approved', message: `"${p.name}" has been approved and is now live in the catalog.`, product_id: p.id });
     }
@@ -119,7 +216,8 @@ export function ApprovalQueue({ products, brands, onRefresh, toast }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 500, marginBottom: 2 }}>{p.name}</div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{p.category} · ${p.unit_price}/unit · MOQ {p.moq}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>~{p.production_lead_days}d production · ~{p.shipping_lead_days}d shipping</div>
+              {/* Fixed: removed shipping_lead_days (field no longer exists on products) */}
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>~{p.production_lead_days}d production lead</div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignSelf: 'center' }}>
               <button className="btn btn-sm btn-secondary" onClick={() => setSelected(selected?.id === p.id ? null : p)}>{Icon.eye} Review</button>
@@ -129,6 +227,14 @@ export function ApprovalQueue({ products, brands, onRefresh, toast }) {
 
           {selected?.id === p.id && (
             <div style={{ padding: '16px 20px', background: 'var(--bg)' }}>
+              {/* Packaging info if available */}
+              {(p.carton_l || p.units_per_carton) && (
+                <div style={{ marginBottom: 14, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  {p.carton_l && p.carton_w && p.carton_h && <span>Carton: {p.carton_l}×{p.carton_w}×{p.carton_h} cm</span>}
+                  {p.units_per_carton && <span>{p.units_per_carton} units/carton</span>}
+                  {p.gross_weight_kg && <span>{p.gross_weight_kg} kg/carton</span>}
+                </div>
+              )}
               {/* Variants with images */}
               {p.product_variants?.length > 0 && (
                 <div style={{ marginBottom: 16 }}>
@@ -248,6 +354,13 @@ export function OrderDetailModal({ order, product, shipments, onClose, onRefresh
   const [tab, setTab] = useState('overview');
   const variant = product?.product_variants?.find(v => v.id === order.variant_id);
 
+  // Carton / CBM for this order (computed from product packaging data)
+  const upc = product?.units_per_carton;
+  const cartonCount = upc && order.qty > 0 ? Math.ceil(order.qty / upc) : null;
+  const cbm = (product?.carton_l && product?.carton_w && product?.carton_h && cartonCount)
+    ? (product.carton_l / 100) * (product.carton_w / 100) * (product.carton_h / 100) * cartonCount
+    : null;
+
   return (
     <Modal title={product?.name || 'Order Detail'} subtitle={`${order.market} · ${order.type === 'sample' ? 'Sample' : 'Standard'} · ${order.qty} units`} onClose={onClose} wide>
       <div style={{ marginBottom: 20 }}>
@@ -270,6 +383,8 @@ export function OrderDetailModal({ order, product, shipments, onClose, onRefresh
             <div className="info-item"><label>Total Cost</label><span>{order.unit_cost ? `$${(order.unit_cost * order.qty).toFixed(2)}` : '—'}</span></div>
             <div className="info-item"><label>Payment Terms</label><span>{order.payment_terms || '—'}</span></div>
             <div className="info-item"><label>Est. Completion</label><span>{order.estimated_completion?.slice(0, 10) || '—'}</span></div>
+            {cartonCount && <div className="info-item"><label>Cartons</label><span>{cartonCount}</span></div>}
+            {cbm && <div className="info-item"><label>CBM</label><span>{cbm.toFixed(3)} m³</span></div>}
             {order.type === 'sample' && <>
               <div className="info-item"><label>Sample Cost</label><span>{order.sample_cost ? `$${order.sample_cost}` : '—'}</span></div>
               <div className="info-item"><label>Sample ETA</label><span>{order.sample_eta || '—'}</span></div>
@@ -288,7 +403,7 @@ export function OrderDetailModal({ order, product, shipments, onClose, onRefresh
 // ── SHIPMENTS TAB ──────────────────────────────────────────────────────────
 export function ShipmentsTab({ order, shipments, onRefresh, toast, readOnly, profile }) {
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ destination: MARKETS[0], container_no: '', po_reference: '', etd: '', eta: '', notes: '' });
+  const [form, setForm] = useState({ destination: MARKETS[0], mode: 'Sea', container_no: '', po_reference: '', etd: '', eta: '', freight_cost: '', notes: '' });
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
@@ -297,7 +412,7 @@ export function ShipmentsTab({ order, shipments, onRefresh, toast, readOnly, pro
     await supabase.from('shipments').insert({ ...form, order_id: order.id, status: 'pending' });
     setSaving(false);
     setAdding(false);
-    setForm({ destination: MARKETS[0], container_no: '', po_reference: '', etd: '', eta: '', notes: '' });
+    setForm({ destination: MARKETS[0], mode: 'Sea', container_no: '', po_reference: '', etd: '', eta: '', freight_cost: '', notes: '' });
     toast('Shipment added', 'success');
     onRefresh();
   };
@@ -327,10 +442,12 @@ export function ShipmentsTab({ order, shipments, onRefresh, toast, readOnly, pro
             )}
           </div>
           <div className="info-grid">
+            <div className="info-item"><label>Mode</label><span>{s.mode || '—'}</span></div>
             <div className="info-item"><label>Container No.</label><span>{s.container_no || '—'}</span></div>
             <div className="info-item"><label>PO / Ref</label><span>{s.po_reference || '—'}</span></div>
             <div className="info-item"><label>ETD</label><span>{s.etd || '—'}</span></div>
             <div className="info-item"><label>ETA</label><span>{s.eta || '—'}</span></div>
+            {s.freight_cost && <div className="info-item"><label>Freight Cost</label><span>${Number(s.freight_cost).toLocaleString()}</span></div>}
             {s.actual_departure && <div className="info-item"><label>Actual Departure</label><span>{s.actual_departure}</span></div>}
             {s.actual_arrival && <div className="info-item"><label>Actual Arrival</label><span>{s.actual_arrival}</span></div>}
           </div>
@@ -342,10 +459,14 @@ export function ShipmentsTab({ order, shipments, onRefresh, toast, readOnly, pro
         <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: 16, marginTop: 10 }}>
           <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
             <div className="form-group"><label>Destination</label><select value={form.destination} onChange={e => set('destination', e.target.value)}>{MARKETS.map(m => <option key={m}>{m}</option>)}</select></div>
+            <div className="form-group"><label>Mode</label><select value={form.mode} onChange={e => set('mode', e.target.value)}><option>Sea</option><option>Air</option><option>Land</option></select></div>
+            <div className="form-group"><label>Freight Cost (USD)</label><input type="number" step="0.01" value={form.freight_cost} onChange={e => set('freight_cost', e.target.value)} placeholder="3500" /></div>
             <div className="form-group"><label>Container No.</label><input value={form.container_no} onChange={e => set('container_no', e.target.value)} placeholder="CMAU1234567" /></div>
             <div className="form-group"><label>PO / Shipment Ref</label><input value={form.po_reference} onChange={e => set('po_reference', e.target.value)} placeholder="PO-2026-001" /></div>
+            <div className="form-group"></div>
             <div className="form-group"><label>ETD</label><input type="date" value={form.etd} onChange={e => set('etd', e.target.value)} /></div>
             <div className="form-group"><label>ETA</label><input type="date" value={form.eta} onChange={e => set('eta', e.target.value)} /></div>
+            <div className="form-group"></div>
             <div className="form-group full"><label>Notes</label><input value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Optional…" /></div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
@@ -407,7 +528,6 @@ function ProductEditModal({ product, brands, onClose, onSave, toast }) {
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  // Variant active toggle
   const toggleVariant = async (variantId, isActive) => {
     await supabase.from('product_variants').update({ is_active: isActive }).eq('id', variantId);
     toast(`Variant ${isActive ? 'activated' : 'deactivated'}`, 'success');
@@ -434,7 +554,17 @@ function ProductEditModal({ product, brands, onClose, onSave, toast }) {
         <div className="form-group"><label>MOQ</label><input type="number" value={form.moq} onChange={e => set('moq', parseInt(e.target.value))} /></div>
         <div className="form-group"><label>Unit Price (USD)</label><input type="number" step="0.01" value={form.unit_price} onChange={e => set('unit_price', parseFloat(e.target.value))} /></div>
         <div className="form-group"><label>Production Lead (days)</label><input type="number" value={form.production_lead_days} onChange={e => set('production_lead_days', parseInt(e.target.value))} /></div>
-        <div className="form-group"><label>Shipping Lead (days)</label><input type="number" value={form.shipping_lead_days} onChange={e => set('shipping_lead_days', parseInt(e.target.value))} /></div>
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-secondary)', margin: '14px 0 10px' }}>Carton / Packaging Info</div>
+      <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
+        <div className="form-group"><label>Carton L (cm)</label><input type="number" step="0.1" value={form.carton_l ?? ''} onChange={e => set('carton_l', e.target.value ? parseFloat(e.target.value) : null)} placeholder="60" /></div>
+        <div className="form-group"><label>Carton W (cm)</label><input type="number" step="0.1" value={form.carton_w ?? ''} onChange={e => set('carton_w', e.target.value ? parseFloat(e.target.value) : null)} placeholder="40" /></div>
+        <div className="form-group"><label>Carton H (cm)</label><input type="number" step="0.1" value={form.carton_h ?? ''} onChange={e => set('carton_h', e.target.value ? parseFloat(e.target.value) : null)} placeholder="30" /></div>
+        <div className="form-group"><label>Units / Carton</label><input type="number" value={form.units_per_carton ?? ''} onChange={e => set('units_per_carton', e.target.value ? parseInt(e.target.value) : null)} placeholder="12" /></div>
+        <div className="form-group"><label>Gross Weight (kg)</label><input type="number" step="0.01" value={form.gross_weight_kg ?? ''} onChange={e => set('gross_weight_kg', e.target.value ? parseFloat(e.target.value) : null)} placeholder="8.5" /></div>
+        <div className="form-group"><label>Product L (cm) <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>opt.</span></label><input type="number" step="0.1" value={form.product_l ?? ''} onChange={e => set('product_l', e.target.value ? parseFloat(e.target.value) : null)} placeholder="15" /></div>
+        <div className="form-group"><label>Product W (cm) <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>opt.</span></label><input type="number" step="0.1" value={form.product_w ?? ''} onChange={e => set('product_w', e.target.value ? parseFloat(e.target.value) : null)} placeholder="10" /></div>
+        <div className="form-group"><label>Product H (cm) <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>opt.</span></label><input type="number" step="0.1" value={form.product_h ?? ''} onChange={e => set('product_h', e.target.value ? parseFloat(e.target.value) : null)} placeholder="5" /></div>
       </div>
       {product.product_variants?.length > 0 && (
         <>
