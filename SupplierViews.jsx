@@ -221,7 +221,7 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
                   ? <span style={{ color: 'var(--green)' }}>✓ {v.imageFiles.filter(f => f instanceof File).length} img · Change</span>
                   : <span style={{ color: 'var(--text-muted)', padding: '3px 8px', border: '1px dashed var(--border-strong)', borderRadius: 4, whiteSpace: 'nowrap' }}>{Icon.upload} Add image</span>}
               </label>
-              <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter((_, i) => i !== idx))} style={{ color: 'var(--red)', padding: 4, flexShrink: 0 }} title="Remove variant">{Icon.trash}</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter((_, i) => i !== idx))} style={{ color: 'var(--red)', padding: '4px 8px', flexShrink: 0, fontSize: 14, lineHeight: 1 }} title="Remove variant">✕</button>
             </div>
           ))}
           <VariantForm brands={brands} category={form.category} existingVariants={variants} onAdd={(v) => setVariants(prev => [...prev, v])} />
@@ -665,7 +665,7 @@ function SupplierEditModal({ product, brands, onClose, onSave, toast }) {
         <div className="variant-row" key={v.tempId}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color, display: 'inline-block' }} />
           <span style={{ flex: 1, fontSize: 12 }}><strong>{v.brand}</strong> — {v.sku} <span style={{ color: 'var(--blue)', fontSize: 10 }}>New</span></span>
-          <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter(x => x.tempId !== v.tempId))} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter(x => x.tempId !== v.tempId))} style={{ color: 'var(--red)', padding: '4px 8px', fontSize: 14, lineHeight: 1 }}>✕</button>
         </div>
       ))}
       <VariantForm brands={brands} category={form.category} existingVariants={variants} onAdd={(v) => setVariants(prev => [...prev, { ...v, isExisting: false }])} />
