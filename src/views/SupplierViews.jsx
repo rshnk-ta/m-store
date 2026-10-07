@@ -470,11 +470,11 @@ function CatalogueChangeModal({ product, mode, brands, orders, profile, onClose,
             { val: 'new_orders_only', label: 'New orders only', desc: 'Existing collecting orders are not affected by this change.' },
             { val: 'all_collecting', label: 'All collecting orders too', desc: 'Market managers who have placed orders will be notified and asked to re-confirm their order.' },
           ].map(opt => (
-            <label key={opt.val} style={{ display: 'flex', gap: 10, cursor: 'pointer', padding: '10px 14px', border: `1px solid ${scope === opt.val ? 'var(--accent-warm)' : 'var(--border)'}`, borderRadius: 'var(--radius-md)', background: scope === opt.val ? 'var(--accent-light)' : 'var(--bg)' }}>
-              <input type="radio" name="scope" value={opt.val} checked={scope === opt.val} onChange={() => setScope(opt.val)} style={{ marginTop: 2 }} />
-              <div>
+            <label key={opt.val} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', padding: '10px 14px', border: `1px solid ${scope === opt.val ? 'var(--accent-warm)' : 'var(--border)'}`, borderRadius: 'var(--radius-md)', background: scope === opt.val ? 'var(--accent-light)' : 'var(--bg)', width: '100%', boxSizing: 'border-box' }}>
+              <input type="radio" name="scope" value={opt.val} checked={scope === opt.val} onChange={() => setScope(opt.val)} style={{ marginTop: 3, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 2 }}>{opt.label}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{opt.desc}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>{opt.desc}</div>
               </div>
             </label>
           ))}
