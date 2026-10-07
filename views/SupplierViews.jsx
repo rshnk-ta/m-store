@@ -211,15 +211,17 @@ export function SupplierSubmitItem({ brands, onRefresh, toast }) {
           {variants.map((v, idx) => (
             <div key={v.tempId} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: v.color, display: 'inline-block', flexShrink: 0 }} />
-              <span style={{ flex: 1, fontSize: 12 }}><strong>{v.brand}</strong> — {v.sku}</span>
-              <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}>
+              <span style={{ flex: 1, fontSize: 12, minWidth: 0 }}><strong>{v.brand}</strong> — {v.sku}</span>
+              <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, flexShrink: 0 }}>
                 <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
                   const files = Array.from(e.target.files);
                   setVariants(vs => vs.map((x, i) => i === idx ? { ...x, imageFiles: [...(x.imageFiles || []), ...files] } : x));
                 }} />
-                {v.imageFiles?.filter(f => f instanceof File).length > 0 ? <span style={{ color: 'var(--green)' }}>✓ {v.imageFiles.filter(f => f instanceof File).length} image{v.imageFiles.filter(f => f instanceof File).length !== 1 ? 's' : ''} · Change</span> : <span style={{ color: 'var(--text-muted)', padding: '3px 8px', border: '1px dashed var(--border-strong)', borderRadius: 4 }}>{Icon.upload} Add image</span>}
+                {v.imageFiles?.filter(f => f instanceof File).length > 0
+                  ? <span style={{ color: 'var(--green)' }}>✓ {v.imageFiles.filter(f => f instanceof File).length} img · Change</span>
+                  : <span style={{ color: 'var(--text-muted)', padding: '3px 8px', border: '1px dashed var(--border-strong)', borderRadius: 4, whiteSpace: 'nowrap' }}>{Icon.upload} Add image</span>}
               </label>
-              <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter((_, i) => i !== idx))} style={{ color: 'var(--red)', padding: 4 }}>{Icon.trash}</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setVariants(vs => vs.filter((_, i) => i !== idx))} style={{ color: 'var(--red)', padding: 4, flexShrink: 0 }} title="Remove variant">{Icon.trash}</button>
             </div>
           ))}
           <VariantForm brands={brands} category={form.category} existingVariants={variants} onAdd={(v) => setVariants(prev => [...prev, v])} />
